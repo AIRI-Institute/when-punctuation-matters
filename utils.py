@@ -2,6 +2,7 @@ import copy
 import math
 import os
 import psutil
+from tqdm.auto import tqdm
 
 import openai
 import torch
@@ -319,8 +320,8 @@ def solve_with_rank_based_scoring(
 
     if single_token_classes or all_classes_share_common_prefix:
         # batching happens across inputs
-        for batch_idx in range(math.ceil(len(input_prompt_string_list) / batch_size_llm)):
-            print("Memory usage:", psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2)
+        for batch_idx in tqdm(range(math.ceil(len(input_prompt_string_list) / batch_size_llm))):
+            # print("Memory usage:", psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2)
 
             batch_range = [batch_idx * batch_size_llm, (batch_idx + 1) * batch_size_llm]  # [) range
 

@@ -50,14 +50,15 @@ def _load_model(args):
             # Set `pad_token_id` in model's configuration
             model.config.pad_token_id = tokenizer.pad_token_id
 
-        elif any(t in args.model_name.lower() for t in ['llama', 'falcon', 'mistral', 'mixtral']) \
+        elif any(t in args.model_name.lower() for t in ['llama', 'falcon', 'mistral', 'mixtral', "qwen"]) \
                 and args.batch_size_llm is not None:
             from transformers import AutoTokenizer, AutoModelForCausalLM
 
             # torch_dtype=torch.float16 is incompatible with batching
             tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=True, cache_dir=cache_dir,
                                                       return_token_type_ids=False)
-            model = AutoModelForCausalLM.from_pretrained(args.model_name, cache_dir=cache_dir, trust_remote_code=True)
+            # model = AutoModelForCausalLM.from_pretrained(args.model_name, cache_dir=cache_dir, trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(args.model_name, cache_dir=cache_dir, torch_dtype=torch.bfloat16)
             model = model.to('cuda')
             model_will_repeat_input = True
 
@@ -327,7 +328,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_name', type=str, default=None)
     parser.add_argument('--batch_size_llm', type=int, default=2, help='Batch size to call the LLM.')
     parser.add_argument('--use_4bit', action='store_true')
-    parser.add_argument('--cache_dir', type=str, default='/gscratch/xlab/msclar/.cache')
+    parser.add_argument('--cache_dir', type=str)
 
     # FormatSpread-specific parameters, corresponding to Thompson Sampling
     parser.add_argument('--num_formats_format_spread', type=int, default=320, help='Number of formats to sample.')
