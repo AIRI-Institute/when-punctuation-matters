@@ -75,6 +75,7 @@ def _load_model(args):
             model.config.pad_token_id = tokenizer.pad_token_id
 
         elif not args.use_gpt3:
+            assert False, "Unsupported model"
             from transformers import AutoTokenizer, AutoModelForCausalLM
             tokenizer = AutoTokenizer.from_pretrained(
                 args.model_name, use_fast=True, cache_dir=cache_dir, return_token_type_ids=False)
@@ -280,9 +281,10 @@ def _get_task_filename_to_print(args):
     return to_print
 
 
-def _get_output_filename(args):
+def _get_output_filename(args, disable_text_action_type):
     scoring_type = 'rankscore' if args.evaluation_metric == 'probability_ranking' else 'genscore'
     use_4bit_str = '_4bit' if args.use_4bit else ''
+    task_filename_to_print = _get_task_filename_to_print(args)
     if args.evaluation_type == 'format_spread':
         filename = f'metadataholistic_{disable_text_action_type}_{scoring_type}_{task_filename_to_print}_search_model_{args.model_name.split("/")[-1]}_nshot_{args.n_shot}_numnodes_{args.num_formats_to_analyze}_numsamples_{args.num_samples}_thompson_numformats_{args.num_formats_format_spread}_batch_{args.batch_size_format_spread}_maxcalls_{args.budget_format_spread}{use_4bit_str}'
     elif args.num_formats_to_analyze:
@@ -298,7 +300,7 @@ def _get_output_filename(args):
     return filename
 
 
-if __name__ == "__main__":
+def main():
     # python main.py --task_filename singular_to_plural.json --num_formats_to_analyze 5 --batch_size_llm 10 --model_name "meta-llama/Llama-2-7b-hf" --n_shot 5
 
     parser = argparse.ArgumentParser()
@@ -339,12 +341,15 @@ if __name__ == "__main__":
     parser.add_argument('--output_dir', type=str, default='data')
 
     args = parser.parse_args()
-    os.makedirs(args.output_dir, exist_ok=True)
-
     # note: earlier version of the code allowed to vary the text for synonyms, but that has been deprecated
     args.disable_text_action_type = True
     args.allow_text_action_type = not args.disable_text_action_type
     disable_text_action_type = 'textdisabled'
+
+    if os.path.exists(os.path.join(args.output_dir, f'{_get_output_filename(args, disable_text_action_type)}.json')):
+        print(f"Already run evaluations for {_get_output_filename(args, disable_text_action_type)}.json")
+        return
+    os.makedirs(args.output_dir, exist_ok=True)
 
     if args.model_name in ['gpt-5', 'gpt-3.5-turbo']:
         args.use_gpt3 = True
@@ -489,4 +494,8 @@ if __name__ == "__main__":
         print('Best Node:', acc[0])
         print('Worst Node:', acc[-1])
 
-    search_tree.save(os.path.join(args.output_dir, f'{_get_output_filename(args)}.json'))
+    search_tree.save(os.path.join(args.output_dir, f'{_get_output_filename(args, disable_text_action_type)}.json'))
+
+
+if __name__ == "__main__":
+    main()
