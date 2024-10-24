@@ -1,7 +1,10 @@
 import json
 import pandas as pd
+import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Dict, List
+from math import sqrt, ceil
+from argparse import ArgumentParser
 
 
 def read_json(path: str) -> Dict:
@@ -63,16 +66,34 @@ def collect_spreads(paths: List[str]) -> pd.DataFrame:
     return pd.DataFrame.from_records(records)
 
 
+def parse_args():
+    parser = ArgumentParser()
+    parser.add_argument("-m", "--model-name", required=True)
+
+    args = parser.parse_args()
+    return args
+
+
 if __name__ == "__main__":
-    root_dir = "data"
+    args = parse_args()
+
+    root_dir = "exp"
 
     num_nodes = 9
-    model_name = "Qwen2.5-7B"
-    pattern = f"metadataholistic*{model_name}*_numnodes_{num_nodes}*.json"
+    # model_name = "Qwen2.5-7B"
+    # model_name = "Mistral-7B-Instruct-v0.2"
+    pattern = f"metadataholistic*{args.model_name}*_numnodes_{num_nodes}*.json"
 
-    paths = Path(root_dir).glob(pattern)
+    subdir = Path(root_dir) / args.model_name
+    paths = subdir.glob(pattern)
     df = collect_spreads(paths)
 
-    df["model"] = model_name
+    df["model"] = args.model_name
 
     print(df)
+
+    df.to_csv(subdir / "spreads.csv")
+    plt.hist(df["spread"], bins=ceil(sqrt(len(df))))
+    plt.title(f"{args.model_name} spreads\non {len(df)} tasks from Natural Instructions")
+    plt.xlabel("Spread (max accuracy - min accuracy)")
+    plt.savefig(subdir / "spreads.png", dpi=350, bbox_inches="tight")
