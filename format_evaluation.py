@@ -1,6 +1,7 @@
 import copy
 import random
 from typing import List
+from tqdm import tqdm
 
 import numpy as np
 
@@ -220,13 +221,12 @@ class GeneticAlgorithmAmongPrompts:
             value_assignments[i] shows all strings representing each field value for the i-th sampled format.
         :param num_samples_to_test: number of samples to consider a node fully evaluated
         """
-
         # convert from list(list(str)) to list(list(int))
         # this func assumes same order as in action_value_pairs, but in text (not id in array, to be robust to changes)
         value_assignments_ids = value_assignment_str_to_indices(value_assignments, self.pointer_action_pairs)
 
         # run all nodes
-        for value_assignment in value_assignments_ids:
+        for value_assignment in tqdm(value_assignments_ids, desc="nodes"):
             self.evaluate_node(value_assignment, num_samples_to_test)
 
 
