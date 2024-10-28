@@ -349,6 +349,8 @@ def main():
     if os.path.exists(os.path.join(args.output_dir, f'{_get_output_filename(args, disable_text_action_type)}.json')):
         print(f"Already run evaluations for {_get_output_filename(args, disable_text_action_type)}.json")
         return
+    else:
+        print(f"Starting task {args.task_filename}")
     os.makedirs(args.output_dir, exist_ok=True)
 
     if args.model_name in ['gpt-5', 'gpt-3.5-turbo']:
