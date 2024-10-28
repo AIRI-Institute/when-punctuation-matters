@@ -1,10 +1,15 @@
 import json
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
+from tqdm import tqdm
 from pathlib import Path
 from typing import Dict, List
 from math import sqrt, ceil
 from argparse import ArgumentParser
+
+sns.set_theme()
 
 
 def read_json(path: str) -> Dict:
@@ -20,11 +25,18 @@ def _extract_name_from_path(path: str) -> str:
     return path.split("_")[3]
 
 
+def plot_and_save_hist(values: np.ndarray, model_name: str, savepath: str | Path):
+    plt.hist(values, bins=ceil(sqrt(len(values))))
+    plt.title(f"{model_name} spreads\non {len(values)} tasks from Natural Instructions")
+    plt.xlabel("Spread (max accuracy - min accuracy)")
+    plt.savefig(savepath, dpi=350, bbox_inches="tight")
+    plt.close()
+
+
 def collect_spreads(paths: List[str]) -> pd.DataFrame:
     records = []
 
-    for path in paths:
-        print(path)
+    for path in tqdm(paths, desc="paths"):
         result_json = read_json(path)
         format_to_acc = result_json["all_structured_prompt_formats_accuracies"]
 
@@ -68,32 +80,35 @@ def collect_spreads(paths: List[str]) -> pd.DataFrame:
 
 def parse_args():
     parser = ArgumentParser()
-    parser.add_argument("-m", "--model-name", required=True)
+    parser.add_argument("--root-dir", default="exp")
+    parser.add_argument("--num-nodes", type=int, default=9)
+    parser.add_argument("-m", "--model-names", nargs="+", required=True)
 
     args = parser.parse_args()
     return args
 
 
+N_SELECTED_TASKS = 53
+
 if __name__ == "__main__":
     args = parse_args()
 
-    root_dir = "exp"
+    total_df = []
 
-    num_nodes = 9
-    # model_name = "Qwen2.5-7B"
-    # model_name = "Mistral-7B-Instruct-v0.2"
-    pattern = f"metadataholistic*{args.model_name}*_numnodes_{num_nodes}*.json"
+    for model_name in args.model_names:
+        subdir = Path(args.root_dir) / model_name
+        pattern = f"metadataholistic*{model_name}*_numnodes_{args.num_nodes}*.json"
+        df = collect_spreads(list(subdir.glob(pattern)))
+        assert len(df) == N_SELECTED_TASKS, f"{len(df)=}"
+        df["model"] = model_name
 
-    subdir = Path(root_dir) / args.model_name
-    paths = subdir.glob(pattern)
-    df = collect_spreads(paths)
+        df.to_csv(subdir / "spreads.csv")
+        plot_and_save_hist(df["spread"].values, model_name, subdir / "spreads.png")
+        total_df.append(df)
+    
+    total_df = pd.concat(total_df)
 
-    df["model"] = args.model_name
-
-    print(df)
-
-    df.to_csv(subdir / "spreads.csv")
-    plt.hist(df["spread"], bins=ceil(sqrt(len(df))))
-    plt.title(f"{args.model_name} spreads\non {len(df)} tasks from Natural Instructions")
-    plt.xlabel("Spread (max accuracy - min accuracy)")
-    plt.savefig(subdir / "spreads.png", dpi=350, bbox_inches="tight")
+    sns.boxplot(data=total_df, x="spread", y="model", hue="model", palette="colorblind", notch=True)
+    plt.xlabel(f"Performance spread across prompt formats\n5-shot, {N_SELECTED_TASKS} tasks from Natural Instructions")
+    plt.ylabel("")
+    plt.savefig(f"{args.root_dir}/all_boxplot.png", dpi=350, bbox_inches="tight")
