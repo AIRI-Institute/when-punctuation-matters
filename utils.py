@@ -46,7 +46,8 @@ def call_openai_api_with_retry(args, prompt, max_tokens=10):
 
 
 def query_model_parallelized(model, tokenizer, prompt_list, max_tokens, top_p, temperature):
-    inputs = tokenizer(prompt_list, padding=True, return_tensors='pt', return_token_type_ids=False).to('cuda')
+    # inputs = tokenizer(prompt_list, padding=True, return_tensors='pt', return_token_type_ids=False).to('cuda')
+    inputs = _tokenize_prompts(prompt_list, tokenizer).to("cuda")
 
     with torch.no_grad():
         outputs = model.generate(
@@ -389,6 +390,30 @@ def solve_with_rank_based_scoring(
             accuracy['total']), (accuracy, logs)
 
 
+def _tokenize_prompts(prompts, tokenizer):
+    # Check if `apply_chat_template` method is available
+    if hasattr(tokenizer, 'apply_chat_template'):
+        conversations = [[{"role": "user", "content": prompt}] for prompt in prompts]
+
+        tokenized_inputs = tokenizer.apply_chat_template(
+            conversations,
+            add_generation_prompt=True,
+            padding=True,
+            return_tensors="pt",
+            return_token_type_ids=False
+        )
+    else:
+        # Fallback to naive tokenization if no chat template is defined
+        tokenized_inputs = tokenizer(
+            prompts,
+            return_tensors="pt",
+            padding=True,
+            return_token_type_ids=False
+        )
+
+    return tokenized_inputs
+
+
 def get_ranking_based_generation_single_token_output_classes(prompts, output_classes, tokenizer, model):
     top_p = 1.0
     temperature = 1.0
@@ -399,8 +424,7 @@ def get_ranking_based_generation_single_token_output_classes(prompts, output_cla
     output_classes_tokens = [t for t in tokenizer(output_classes, return_token_type_ids=False)['input_ids']]
     all_classes_share_common_prefix = len(set([tuple(t[:-1]) for t in output_classes_tokens])) == 1
 
-    tokenized_inputs_list = tokenizer(prompts, return_tensors="pt", padding=True, return_token_type_ids=False)[
-        'input_ids'].tolist()
+    tokenized_inputs_list = _tokenize_prompts(prompts, tokenizer)["input_ids"].tolist()
     if all_classes_share_common_prefix:
         for i in range(len(tokenized_inputs_list)):
             # if the tokenized element is [1, 29871, 29900], get [29871]
@@ -457,7 +481,8 @@ def get_ranking_based_generation_multiple_token_output_classes(prompt, output_cl
 
 
 def _get_input_logits_and_tokens(inputs, tokenizer, model):
-    tokenized_inputs = tokenizer(inputs, return_tensors="pt", padding=True, return_token_type_ids=False).to('cuda')
+    # tokenized_inputs = tokenizer(inputs, return_tensors="pt", padding=True, return_token_type_ids=False).to('cuda')
+    tokenized_inputs = _tokenize_prompts(inputs, tokenizer).to("cuda")
     with torch.no_grad():
         outputs = model(**tokenized_inputs)
     logits = outputs["logits"].detach().to(device="cpu", dtype=torch.float32)
