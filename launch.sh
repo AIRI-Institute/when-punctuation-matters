@@ -18,7 +18,7 @@ do
         --task_filename ${task}_ \
         --dataset_name natural-instructions \
         --num_formats_to_analyze 9 \
-        --batch_size_llm 2 \
+        --batch_size_llm 8 \
         --num_samples 1000 \
         --model_name ${model} \
         --n_shot 5 \
