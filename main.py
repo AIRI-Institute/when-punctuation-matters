@@ -73,6 +73,7 @@ def _load_model(args):
 
             # Set `pad_token_id` in model's configuration
             model.config.pad_token_id = tokenizer.pad_token_id
+            model.generation_config.pad_token_id = tokenizer.pad_token_id
 
         elif not args.use_gpt3:
             assert False, "Unsupported model"

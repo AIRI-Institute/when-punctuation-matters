@@ -357,7 +357,7 @@ def solve_with_rank_based_scoring(
 
     else:
         # batching happens inside each input, since we need to do inference for each prompt+possible_output
-        for i in tqdm(range(len(input_prompt_string_list)), desc="prompts"):
+        for i in tqdm(range(len(input_prompt_string_list)), desc="data_samples"):
             idx = selected_dataset_ids[i]
             full_prompt_string = input_prompt_string_list[i]
 
@@ -434,7 +434,7 @@ def get_ranking_based_generation_single_token_output_classes(prompts, output_cla
     with torch.no_grad():
         outputs = model.generate(input_ids=tokenized_inputs,
                                  top_p=top_p, temperature=temperature, max_new_tokens=1,
-                                 return_dict_in_generate=True, output_scores=True)
+                                 return_dict_in_generate=True, output_scores=True, pad_token_id=tokenizer.pad_token_id)
 
     scores = outputs["scores"][0]  # first dimension = 1 since we only generate one token
     generations = []
