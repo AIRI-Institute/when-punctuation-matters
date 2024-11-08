@@ -3,10 +3,12 @@ import math
 import os
 import psutil
 from tqdm import tqdm
+from typing import List
 
 import openai
 import torch
 import torch.nn.functional as F
+from transformers import BatchEncoding
 
 from grammar_definition import apply_prompt_format, flatten
 
@@ -176,7 +178,7 @@ def evaluate_prompt_format(
 
     # 3. evaluate
     if args.evaluation_metric == 'probability_ranking':
-        return solve_with_rank_based_scoring(
+        return solve_with_rank_based_scoring_refactor(
             dataset_updated, selected_dataset_ids, model, tokenizer, input_prompt_string_list, args.batch_size_llm)
 
     elif args.evaluation_metric == 'exact_prefix_matching':
@@ -389,19 +391,106 @@ def solve_with_rank_based_scoring(
             sum(accuracy['wrong']) * 1.0 / max(accuracy['total'], 1),
             accuracy['total']), (accuracy, logs)
 
+### REFACTOR ###
+@torch.inference_mode()
+def solve_with_rank_based_scoring_refactor(dataset, selected_dataset_ids, model, tokenizer, input_prompt_string_list, batch_size_llm):
+    output_classes = sorted(list(set([dataset[idx]['output'][0] for idx in selected_dataset_ids])))
+    assert len(output_classes) < 100
+    assert tokenizer is not None and model is not None
 
-def _tokenize_prompts(prompts, tokenizer):
-    # Check if `apply_chat_template` method is available
-    if hasattr(tokenizer, 'apply_chat_template'):
+    accuracy = {
+        'right': [],
+        'wrong': [],
+        'other': [],
+        'total': 0
+    }
+    logs = []
+
+    for batch_idx in tqdm(range(math.ceil(len(input_prompt_string_list) / batch_size_llm)), desc="batches"):
+        batch_start_idx = batch_idx * batch_size_llm
+        batch_end_idx = (batch_idx + 1) * batch_size_llm
+        prompts = input_prompt_string_list[batch_start_idx:batch_end_idx]
+        actual_batch_size = len(prompts)
+
+        inputs = _tokenize_prompts_with_answers(prompts, output_classes, tokenizer).to(model.device)
+        # inputs.input_ids has shape [batch_size * n_classes, seq_len]
+        print(f"{inputs.input_ids.shape=}")
+
+        answer_lengths = [len(a) for a in tokenizer(output_classes, add_special_tokens=False)["input_ids"]]
+        max_answer_length = max(answer_lengths)
+        # assert max_answer_length == min(answer_lengths), \
+        #     f"Expected all answer options to be of same token length, got min length {min(answer_lengths)}, max length {max_answer_length}"
+
+        output_tokens = inputs["input_ids"][:, -max_answer_length:]
+        # [batch_size * n_classes, max_answer_length]
+
+        outputs = model(**inputs)
+        logits = outputs.logits
+        # [batch_size * n_classes, seq_len, vocab_size]
+        print(f"{batch_size_llm=}, {actual_batch_size=}")
+        print(f"{max_answer_length=}")
+
+        answer_logits = logits[:, -max_answer_length - 1:-1]
+        print(f"{answer_logits.shape=}")
+        # [batch_size * n_classes, max_answer_length, vocab_size]
+        answer_logits = F.log_softmax(answer_logits, dim=-1)
+        logits_for_answer_tokens = torch.gather(answer_logits, dim=-1, index=output_tokens.unsqueeze(-1)).squeeze(-1)
+        print(f"{logits_for_answer_tokens.shape=}")
+
+        # mask out tokens, which do not correspond to answer tokens
+        # assumes left-side padding
+        for i, length in enumerate(answer_lengths * actual_batch_size):
+            logits_for_answer_tokens[i, :-length] = 0
+
+        # [batch_size * n_classes, max_answer_length]
+        cumulative_log_probs = logits_for_answer_tokens.sum(-1)
+        # [batch_size * n_classes]
+        cumulative_log_probs = cumulative_log_probs.reshape(actual_batch_size, len(output_classes))
+
+        chosen_answer_indices = cumulative_log_probs.argmax(dim=-1)
+
+        for idx in range(actual_batch_size):
+            generation = output_classes[chosen_answer_indices[idx]]
+            expected_output = dataset[selected_dataset_ids[batch_start_idx + idx]]["output"][0]
+
+            accuracy["right"].append(generation == expected_output)
+            accuracy["wrong"].append(generation != expected_output and generation in output_classes)
+            accuracy["other"].append(generation not in output_classes)
+            # by construction chosen answer is always from output_classes, but this might be useful for free-form answers later
+            accuracy["total"] += 1
+
+            logs.append(
+                {
+                    'entry': dataset[idx],
+                    'dataset_idx': idx,
+                    'generation': generation,
+                    'answer': expected_output,
+                    'output_classes': output_classes,
+                    'full_prompt_string': input_prompt_string_list[batch_start_idx + idx],
+                    'eval_type': 'ranking',
+                    'scores': None,
+                }
+            )
+
+
+    return (sum(accuracy['right']) * 1.0 / max(accuracy['total'], 1),
+            sum(accuracy['wrong']) * 1.0 / max(accuracy['total'], 1),
+            accuracy['total']), (accuracy, logs)
+### REFACTOR ###
+
+def _tokenize_prompts(prompts: List[str], tokenizer) -> BatchEncoding:
+    if tokenizer.chat_template:
         conversations = [[{"role": "user", "content": prompt}] for prompt in prompts]
 
-        tokenized_inputs = tokenizer.apply_chat_template(
+        input_ids = tokenizer.apply_chat_template(
             conversations,
             add_generation_prompt=True,
             padding=True,
             return_tensors="pt",
             return_token_type_ids=False
         )
+        data = {"input_ids": input_ids}
+        tokenized_inputs = BatchEncoding(data=data)
     else:
         # Fallback to naive tokenization if no chat template is defined
         tokenized_inputs = tokenizer(
@@ -410,7 +499,35 @@ def _tokenize_prompts(prompts, tokenizer):
             padding=True,
             return_token_type_ids=False
         )
+    return tokenized_inputs
 
+
+def _tokenize_prompts_with_answers(prompts: List[str], output_classes: List[str], tokenizer) -> BatchEncoding:
+    if tokenizer.chat_template:
+        conversations = [
+            [{"role": "user", "content": prompt}, {"role": "assistant", "content": answer}]
+            for prompt in prompts for answer in output_classes
+        ]
+
+        input_ids = tokenizer.apply_chat_template(
+            conversations,
+            add_generation_prompt=False,    # False, since we already have the responce by the assistant hardcoded
+            padding=True,
+            return_tensors="pt",
+            return_token_type_ids=False
+        )
+        tokenized_inputs = BatchEncoding(data={"input_ids": input_ids})
+        return tokenized_inputs
+
+    # Fallback to naive tokenization if no chat template is defined
+    prompts_with_answers = [p + answer for p in prompts for answer in output_classes]
+
+    tokenized_inputs = tokenizer(
+        prompts_with_answers,
+        return_tensors="pt",
+        padding=True,
+        return_token_type_ids=False
+    )
     return tokenized_inputs
 
 
@@ -422,32 +539,41 @@ def get_ranking_based_generation_single_token_output_classes(prompts, output_cla
     # also if all output values share the same prefix. E.g. ['0', '1'] tokenizes to [[1, 29871, 29900], [1, 29871, 29896]]
     # the first token id is always '1', so we ignore it
     output_classes_tokens = [t for t in tokenizer(output_classes, return_token_type_ids=False)['input_ids']]
+    print(f"{output_classes=}")
+    print(f"{output_classes_tokens=}")
     all_classes_share_common_prefix = len(set([tuple(t[:-1]) for t in output_classes_tokens])) == 1
 
-    tokenized_inputs_list = _tokenize_prompts(prompts, tokenizer)["input_ids"].tolist()
+    tokenized_inputs = _tokenize_prompts(prompts, tokenizer)
+    tokenized_inputs_list = tokenized_inputs["input_ids"].tolist()
     if all_classes_share_common_prefix:
         for i in range(len(tokenized_inputs_list)):
             # if the tokenized element is [1, 29871, 29900], get [29871]
             tokenized_inputs_list[i] += output_classes_tokens[0][1:-1]
     tokenized_inputs = torch.tensor(tokenized_inputs_list).to('cuda')
+    print(f"{tokenized_inputs.shape=}")
+    print(tokenizer.batch_decode(tokenized_inputs))
 
     with torch.no_grad():
         outputs = model.generate(input_ids=tokenized_inputs,
                                  top_p=top_p, temperature=temperature, max_new_tokens=1,
-                                 return_dict_in_generate=True, output_scores=True, pad_token_id=tokenizer.pad_token_id)
+                                 return_dict_in_generate=True, output_scores=True)
 
     scores = outputs["scores"][0]  # first dimension = 1 since we only generate one token
+    print(f"{scores.shape=}")
     generations = []
     for i in range(len(prompts)):
         all_logits = scores[i, :].squeeze().tolist()
         all_logits_sorted = sorted([(all_logits[t[-1]], i) for i, t in enumerate(output_classes_tokens)], reverse=True)
         generations.append(output_classes[all_logits_sorted[0][1]])
+    print(f"{generations=}")
     return generations
 
 
 def get_ranking_based_generation_multiple_token_output_classes(prompt, output_classes, tokenizer, model,
                                                                batch_size_llm):
     output_classes_tokens = [t for t in tokenizer(output_classes, return_token_type_ids=False)['input_ids']]
+    print(f"{output_classes=}")
+    print(f"{output_classes_tokens=}")
 
     prompts = [prompt + class_seq for class_seq in output_classes]
     all_logits_list, all_tokens_list = [], []
