@@ -4,9 +4,6 @@ model=$2
 # Splits by `/` and takes last part (which is model's name)
 exp_name=$( echo $model | rev | cut -d / -f1 | rev )
 
-# export CUDA_HOME=/usr/local/cuda-11.4
-# export PATH=$CUDA_HOME/bin:$PATH
-# export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu/
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
 
 echo "which python:" $(which python)
