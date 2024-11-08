@@ -57,8 +57,8 @@ def _load_model(args):
             # torch_dtype=torch.float16 is incompatible with batching
             tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=True, cache_dir=cache_dir,
                                                       return_token_type_ids=False)
-            # model = AutoModelForCausalLM.from_pretrained(args.model_name, cache_dir=cache_dir, trust_remote_code=True)
             model = AutoModelForCausalLM.from_pretrained(args.model_name, cache_dir=cache_dir, torch_dtype=torch.bfloat16)
+            # model = AutoModelForCausalLM.from_pretrained(args.model_name, cache_dir=cache_dir, torch_dtype=torch.float)
             model = model.to('cuda')
             model_will_repeat_input = True
 
@@ -361,7 +361,7 @@ def main():
         args.use_gpt3 = False
         args.gpt3_engine = None
 
-    assert args.num_samples % args.batch_size_llm == 0  # for simplicity
+    # assert args.num_samples % args.batch_size_llm == 0  # for simplicity
     assert args.batch_size_format_spread % args.batch_size_llm == 0 if args.evaluation_type == 'format_spread' else True   # for simplicity
     assert len(
         [e for e in [args.num_formats_to_analyze, args.num_edges_to_analyze, args.extend_graph_paths_from_file] if

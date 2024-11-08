@@ -398,6 +398,9 @@ def solve_with_rank_based_scoring_refactor(dataset, selected_dataset_ids, model,
     assert len(output_classes) < 100
     assert tokenizer is not None and model is not None
 
+    answer_lengths = [len(a) for a in tokenizer(output_classes, add_special_tokens=False)["input_ids"]]
+    max_answer_length = max(answer_lengths)
+
     accuracy = {
         'right': [],
         'wrong': [],
@@ -414,28 +417,22 @@ def solve_with_rank_based_scoring_refactor(dataset, selected_dataset_ids, model,
 
         inputs = _tokenize_prompts_with_answers(prompts, output_classes, tokenizer).to(model.device)
         # inputs.input_ids has shape [batch_size * n_classes, seq_len]
-        print(f"{inputs.input_ids.shape=}")
-
-        answer_lengths = [len(a) for a in tokenizer(output_classes, add_special_tokens=False)["input_ids"]]
-        max_answer_length = max(answer_lengths)
-        # assert max_answer_length == min(answer_lengths), \
-        #     f"Expected all answer options to be of same token length, got min length {min(answer_lengths)}, max length {max_answer_length}"
+        # print(f"{inputs['input_ids'].shape=}")
 
         output_tokens = inputs["input_ids"][:, -max_answer_length:]
         # [batch_size * n_classes, max_answer_length]
 
-        outputs = model(**inputs)
-        logits = outputs.logits
+        logits = model(**inputs).logits.detach()
         # [batch_size * n_classes, seq_len, vocab_size]
-        print(f"{batch_size_llm=}, {actual_batch_size=}")
-        print(f"{max_answer_length=}")
+        # print(f"{batch_size_llm=}, {actual_batch_size=}")
+        # print(f"{max_answer_length=}")
 
-        answer_logits = logits[:, -max_answer_length - 1:-1]
-        print(f"{answer_logits.shape=}")
+        answer_logits = logits[:, -max_answer_length - 1:-1].clone()
+        # print(f"{answer_logits.shape=}")
         # [batch_size * n_classes, max_answer_length, vocab_size]
         answer_logits = F.log_softmax(answer_logits, dim=-1)
         logits_for_answer_tokens = torch.gather(answer_logits, dim=-1, index=output_tokens.unsqueeze(-1)).squeeze(-1)
-        print(f"{logits_for_answer_tokens.shape=}")
+        # print(f"{logits_for_answer_tokens.shape=}")
 
         # mask out tokens, which do not correspond to answer tokens
         # assumes left-side padding
@@ -447,10 +444,10 @@ def solve_with_rank_based_scoring_refactor(dataset, selected_dataset_ids, model,
         # [batch_size * n_classes]
         cumulative_log_probs = cumulative_log_probs.reshape(actual_batch_size, len(output_classes))
 
-        chosen_answer_indices = cumulative_log_probs.argmax(dim=-1)
+        chosen_answer_indices = cumulative_log_probs.argmax(dim=-1).cpu()
 
         for idx in range(actual_batch_size):
-            generation = output_classes[chosen_answer_indices[idx]]
+            generation = output_classes[chosen_answer_indices[idx].item()]
             expected_output = dataset[selected_dataset_ids[batch_start_idx + idx]]["output"][0]
 
             accuracy["right"].append(generation == expected_output)
@@ -461,7 +458,7 @@ def solve_with_rank_based_scoring_refactor(dataset, selected_dataset_ids, model,
 
             logs.append(
                 {
-                    'entry': dataset[idx],
+                    'entry': dataset[selected_dataset_ids[batch_idx + idx]],
                     'dataset_idx': idx,
                     'generation': generation,
                     'answer': expected_output,
@@ -472,6 +469,8 @@ def solve_with_rank_based_scoring_refactor(dataset, selected_dataset_ids, model,
                 }
             )
 
+        if batch_idx % 3 == 0:
+            torch.cuda.empty_cache()
 
     return (sum(accuracy['right']) * 1.0 / max(accuracy['total'], 1),
             sum(accuracy['wrong']) * 1.0 / max(accuracy['total'], 1),
@@ -513,6 +512,7 @@ def _tokenize_prompts_with_answers(prompts: List[str], output_classes: List[str]
             conversations,
             add_generation_prompt=False,    # False, since we already have the responce by the assistant hardcoded
             padding=True,
+            tokenizer_kwargs={"pad_to_multiple_of": 8},
             return_tensors="pt",
             return_token_type_ids=False
         )
@@ -526,6 +526,7 @@ def _tokenize_prompts_with_answers(prompts: List[str], output_classes: List[str]
         prompts_with_answers,
         return_tensors="pt",
         padding=True,
+        pad_to_multiple_of=8,
         return_token_type_ids=False
     )
     return tokenized_inputs
@@ -539,8 +540,8 @@ def get_ranking_based_generation_single_token_output_classes(prompts, output_cla
     # also if all output values share the same prefix. E.g. ['0', '1'] tokenizes to [[1, 29871, 29900], [1, 29871, 29896]]
     # the first token id is always '1', so we ignore it
     output_classes_tokens = [t for t in tokenizer(output_classes, return_token_type_ids=False)['input_ids']]
-    print(f"{output_classes=}")
-    print(f"{output_classes_tokens=}")
+    # print(f"{output_classes=}")
+    # print(f"{output_classes_tokens=}")
     all_classes_share_common_prefix = len(set([tuple(t[:-1]) for t in output_classes_tokens])) == 1
 
     tokenized_inputs = _tokenize_prompts(prompts, tokenizer)
@@ -550,8 +551,8 @@ def get_ranking_based_generation_single_token_output_classes(prompts, output_cla
             # if the tokenized element is [1, 29871, 29900], get [29871]
             tokenized_inputs_list[i] += output_classes_tokens[0][1:-1]
     tokenized_inputs = torch.tensor(tokenized_inputs_list).to('cuda')
-    print(f"{tokenized_inputs.shape=}")
-    print(tokenizer.batch_decode(tokenized_inputs))
+    # print(f"{tokenized_inputs.shape=}")
+    # print(tokenizer.batch_decode(tokenized_inputs))
 
     with torch.no_grad():
         outputs = model.generate(input_ids=tokenized_inputs,
@@ -559,13 +560,13 @@ def get_ranking_based_generation_single_token_output_classes(prompts, output_cla
                                  return_dict_in_generate=True, output_scores=True)
 
     scores = outputs["scores"][0]  # first dimension = 1 since we only generate one token
-    print(f"{scores.shape=}")
+    # print(f"{scores.shape=}")
     generations = []
     for i in range(len(prompts)):
         all_logits = scores[i, :].squeeze().tolist()
         all_logits_sorted = sorted([(all_logits[t[-1]], i) for i, t in enumerate(output_classes_tokens)], reverse=True)
         generations.append(output_classes[all_logits_sorted[0][1]])
-    print(f"{generations=}")
+    # print(f"{generations=}")
     return generations
 
 
