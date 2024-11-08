@@ -7,6 +7,7 @@ from tqdm import tqdm
 from pathlib import Path
 from typing import Dict, List
 from math import sqrt, ceil
+from statistics import median
 from argparse import ArgumentParser
 
 sns.set_theme()
@@ -60,13 +61,14 @@ def collect_spreads(paths: List[str]) -> pd.DataFrame:
                 worst_acc = acc
                 worst_n = n
 
-        spread = best_acc - worst_acc
+        median_accuracy = median([acc_tuple[0] for acc_tuple in format_to_acc.values()])
 
         record = {
             "task": _extract_name_from_path(str(path)),
-            "spread": spread,
+            "spread": best_acc - worst_acc,
             "best_accuracy": best_acc,
             "worst_accuracy": worst_acc,
+            "median_accuracy": median_accuracy,
             "best_format": best_format,
             "worst_format": worst_format,
             "best_n": best_n,
@@ -82,7 +84,7 @@ def parse_args():
     parser = ArgumentParser()
     parser.add_argument("--root-dir", default="exp")
     parser.add_argument("--num-nodes", type=int, default=9)
-    parser.add_argument("-m", "--model-names", nargs="+", required=True)
+    parser.add_argument("-m", "--model-names", nargs="+")
 
     args = parser.parse_args()
     return args
@@ -95,9 +97,13 @@ if __name__ == "__main__":
 
     total_df = []
 
-    for model_name in args.model_names:
+    model_names = args.model_names if args.model_names else \
+        sorted([filename.name for filename in Path(args.root_dir).iterdir() if filename.is_dir()])
+    print(model_names)
+
+    for model_name in model_names:
         subdir = Path(args.root_dir) / model_name
-        pattern = f"metadataholistic*{model_name}*_numnodes_{args.num_nodes}*.json"
+        pattern = f"metadataholistic*{model_name[:-len('-chattemplate')] if model_name.endswith('-chattemplate') else model_name}*_numnodes_{args.num_nodes}*.json"
         df = collect_spreads(list(subdir.glob(pattern)))
         assert len(df) == N_SELECTED_TASKS, f"{len(df)=}"
         df["model"] = model_name
@@ -112,3 +118,10 @@ if __name__ == "__main__":
     plt.xlabel(f"Performance spread across prompt formats\n5-shot, {N_SELECTED_TASKS} tasks from Natural Instructions")
     plt.ylabel("")
     plt.savefig(f"{args.root_dir}/all_boxplot.png", dpi=350, bbox_inches="tight")
+    plt.close()
+
+    sns.boxplot(data=total_df, x="median_accuracy", y="model", hue="model", palette="colorblind")
+    plt.xlabel(f"Median accuracy across prompt formats\n5-shot, {N_SELECTED_TASKS} tasks from Natural Instructions")
+    plt.ylabel("")
+    plt.savefig(f"{args.root_dir}/median_accuracy_all_boxplot.png", dpi=350, bbox_inches="tight")
+    plt.close()
