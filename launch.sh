@@ -1,9 +1,14 @@
 devices=$1
 model=$2
+suffix=$3
 
 # Splits by `/` and takes last part (which is model's name)
 exp_name=$( echo $model | rev | cut -d / -f1 | rev )
+exp_name="${exp_name}${suffix}"
 
+export CUDA_HOME=/usr/local/cuda-12.4
+export PATH=$CUDA_HOME/bin:$PATH
+export LRU_CACHE_CAPACITY=1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
 
 echo "which python:" $(which python)
@@ -15,7 +20,7 @@ do
         --task_filename ${task}_ \
         --dataset_name natural-instructions \
         --num_formats_to_analyze 9 \
-        --batch_size_llm 8 \
+        --batch_size_llm 32 \
         --num_samples 1000 \
         --model_name ${model} \
         --n_shot 5 \
