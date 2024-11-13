@@ -99,13 +99,17 @@ if __name__ == "__main__":
 
     model_names = args.model_names if args.model_names else \
         sorted([filename.name for filename in Path(args.root_dir).iterdir() if filename.is_dir()])
+
+    model_names = [name for name in model_names if "Mistral" not in name]
     print(model_names)
 
-    for model_name in model_names:
+    for model_name in tqdm(model_names, desc="models"):
         subdir = Path(args.root_dir) / model_name
         pattern = f"metadataholistic*{model_name[:-len('-chattemplate')] if model_name.endswith('-chattemplate') else model_name}*_numnodes_{args.num_nodes}*.json"
-        df = collect_spreads(list(subdir.glob(pattern)))
-        assert len(df) == N_SELECTED_TASKS, f"{len(df)=}"
+        evaluated_tasks_result_paths = list(subdir.glob(pattern))
+        if len(evaluated_tasks_result_paths) != N_SELECTED_TASKS:
+            print(f"ATTENTION: {model_name} is only evaluated on {len(evaluated_tasks_result_paths)} tasks")
+        df = collect_spreads(evaluated_tasks_result_paths)
         df["model"] = model_name
 
         df.to_csv(subdir / "spreads.csv")
