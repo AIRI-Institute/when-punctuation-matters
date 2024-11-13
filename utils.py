@@ -469,8 +469,8 @@ def solve_with_rank_based_scoring_refactor(dataset, selected_dataset_ids, model,
                 }
             )
 
-        if batch_idx % 3 == 0:
-            torch.cuda.empty_cache()
+        del logits
+        torch.cuda.empty_cache()
 
     return (sum(accuracy['right']) * 1.0 / max(accuracy['total'], 1),
             sum(accuracy['wrong']) * 1.0 / max(accuracy['total'], 1),
@@ -502,7 +502,7 @@ def _tokenize_prompts(prompts: List[str], tokenizer) -> BatchEncoding:
 
 
 def _tokenize_prompts_with_answers(prompts: List[str], output_classes: List[str], tokenizer) -> BatchEncoding:
-    if tokenizer.chat_template:
+    if not os.environ["DISABLE_CHAT_TEMPLATE"] == "1" and tokenizer.chat_template:
         conversations = [
             [{"role": "user", "content": prompt}, {"role": "assistant", "content": answer}]
             for prompt in prompts for answer in output_classes
@@ -521,7 +521,6 @@ def _tokenize_prompts_with_answers(prompts: List[str], output_classes: List[str]
 
     # Fallback to naive tokenization if no chat template is defined
     prompts_with_answers = [p + answer for p in prompts for answer in output_classes]
-
     tokenized_inputs = tokenizer(
         prompts_with_answers,
         return_tensors="pt",
