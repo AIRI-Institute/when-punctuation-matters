@@ -301,9 +301,7 @@ def _get_output_filename(args, disable_text_action_type):
     return filename
 
 
-def main():
-    # python main.py --task_filename singular_to_plural.json --num_formats_to_analyze 5 --batch_size_llm 10 --model_name "meta-llama/Llama-2-7b-hf" --n_shot 5
-
+def make_parser():
     parser = argparse.ArgumentParser()
 
     # params to load a task
@@ -341,7 +339,12 @@ def main():
     # saving parameters
     parser.add_argument('--output_dir', type=str, default='data')
 
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    # python main.py --task_filename singular_to_plural.json --num_formats_to_analyze 5 --batch_size_llm 10 --model_name "meta-llama/Llama-2-7b-hf" --n_shot 5
+    args = make_parser().parse_args()
     # note: earlier version of the code allowed to vary the text for synonyms, but that has been deprecated
     args.disable_text_action_type = True
     args.allow_text_action_type = not args.disable_text_action_type
@@ -377,8 +380,9 @@ def main():
         filepath = os.path.join(args.output_dir,
                                 f'holistic_random_sample_{task_filename_to_print}_nodes_{args.num_formats_to_analyze}_{disable_text_action_type}.json')
         if args.nodes_to_evaluate_filepath:
+            print(f"Loading formats from {args.nodes_to_evaluate_filepath}")
             tmp = json.load(open(args.nodes_to_evaluate_filepath, 'r'))
-            valid_value_assignments = tmp['valid_value_assignments']
+            valid_value_assignments = tmp['valid_value_assignments'] if "valid_value_assignments" in tmp else tmp["test_formats"]
             dataset_ordered_ids = tmp['dataset_ordered_ids']
         elif os.path.exists(filepath):
             tmp = json.load(open(filepath, 'r'))
