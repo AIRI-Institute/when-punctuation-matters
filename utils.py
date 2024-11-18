@@ -391,6 +391,13 @@ def solve_with_rank_based_scoring(
             sum(accuracy['wrong']) * 1.0 / max(accuracy['total'], 1),
             accuracy['total']), (accuracy, logs)
 
+# for prompt_format in prompt_formats:
+#     solve_with_rank_based_scoring_refactor(...)
+
+# 1) refactor again
+# 2) implement Temlate Ensembles separately
+# -- how to remain consistent with original code?
+
 ### REFACTOR ###
 @torch.inference_mode()
 def solve_with_rank_based_scoring_refactor(dataset, selected_dataset_ids, model, tokenizer, input_prompt_string_list, batch_size_llm):
@@ -502,11 +509,25 @@ def _tokenize_prompts(prompts: List[str], tokenizer) -> BatchEncoding:
 
 
 def _tokenize_prompts_with_answers(prompts: List[str], output_classes: List[str], tokenizer) -> BatchEncoding:
-    if not os.environ["DISABLE_CHAT_TEMPLATE"] == "1" and tokenizer.chat_template:
+    """
+    Example inputs:
+        prompt: ["2 + 2 = ? A) 3 B) 4 C) 5", "....", "..."]
+        output_classes: ["A", "B", "C"]
+    """
+    if not os.environ.get("DISABLE_CHAT_TEMPLATE") == "1" and tokenizer.chat_template:
         conversations = [
             [{"role": "user", "content": prompt}, {"role": "assistant", "content": answer}]
             for prompt in prompts for answer in output_classes
         ]
+        # [
+        #  prompt1 A
+        #  prompt1 B
+        #  prompt1 C
+        #  prompt2 A
+        #  prompt2 B
+        #  prompt2 C
+        #  ...
+        # ]
 
         input_ids = tokenizer.apply_chat_template(
             conversations,
@@ -516,6 +537,7 @@ def _tokenize_prompts_with_answers(prompts: List[str], output_classes: List[str]
             return_tensors="pt",
             return_token_type_ids=False
         )
+        # input_ids: [n_prompts * n_answers, max_seq_length]
         tokenized_inputs = BatchEncoding(data={"input_ids": input_ids})
         return tokenized_inputs
 
