@@ -26,9 +26,9 @@ def _extract_name_from_path(path: str) -> str:
     return path.split("_")[3]
 
 
-def plot_and_save_hist(values: np.ndarray, model_name: str, savepath: str | Path):
+def plot_and_save_hist(values: np.ndarray, experiment_name: str, savepath: str | Path):
     plt.hist(values, bins=ceil(sqrt(len(values))))
-    plt.title(f"{model_name} spreads\non {len(values)} tasks from Natural Instructions")
+    plt.title(f"{experiment_name} spreads\non {len(values)} tasks from Natural Instructions")
     plt.xlabel("Spread (max accuracy - min accuracy)")
     plt.savefig(savepath, dpi=350, bbox_inches="tight")
     plt.close()
@@ -84,7 +84,7 @@ def parse_args():
     parser = ArgumentParser()
     parser.add_argument("--root-dir", default="exp")
     parser.add_argument("--num-nodes", type=int, default=9)
-    parser.add_argument("-m", "--model-names", nargs="+")
+    parser.add_argument("-e", "--experiment-names", nargs="+")
 
     args = parser.parse_args()
     return args
@@ -97,34 +97,43 @@ if __name__ == "__main__":
 
     total_df = []
 
-    model_names = args.model_names if args.model_names else \
+    experiment_names = args.experiment_names if args.experiment_names else \
         sorted([filename.name for filename in Path(args.root_dir).iterdir() if filename.is_dir()])
 
-    model_names = [name for name in model_names if "Mistral" not in name]
-    print(model_names)
+    experiment_names = [name for name in experiment_names if "Mistral" not in name]
+    print(experiment_names)
 
-    for model_name in tqdm(model_names, desc="models"):
-        subdir = Path(args.root_dir) / model_name
-        pattern = f"metadataholistic*{model_name[:-len('-chattemplate')] if model_name.endswith('-chattemplate') else model_name}*_numnodes_{args.num_nodes}*.json"
+    for experiment_name in tqdm(experiment_names, desc="models"):
+        subdir = Path(args.root_dir) / experiment_name
+
+        if experiment_name.endswith("-chattemplate"):
+            model_name = experiment_name[:-len("-chattemplate")]
+        elif experiment_name.endswith("-nochattemplate"):
+            model_name = experiment_name[:-len("-nochattemplate")]
+        else:
+            model_name = experiment_name
+
+        pattern = f"metadataholistic*{model_name}*_numnodes_{args.num_nodes}*.json"
         evaluated_tasks_result_paths = list(subdir.glob(pattern))
         if len(evaluated_tasks_result_paths) != N_SELECTED_TASKS:
-            print(f"ATTENTION: {model_name} is only evaluated on {len(evaluated_tasks_result_paths)} tasks")
+            print(f"ATTENTION: {experiment_name} is only evaluated on {len(evaluated_tasks_result_paths)} tasks")
         df = collect_spreads(evaluated_tasks_result_paths)
+        df["experiment"] = experiment_name
         df["model"] = model_name
 
         df.to_csv(subdir / "spreads.csv")
-        plot_and_save_hist(df["spread"].values, model_name, subdir / "spreads.png")
+        plot_and_save_hist(df["spread"].values, experiment_name, subdir / "spreads.png")
         total_df.append(df)
     
     total_df = pd.concat(total_df)
 
-    sns.boxplot(data=total_df, x="spread", y="model", hue="model", palette="colorblind", notch=True)
+    sns.boxplot(data=total_df, x="spread", y="experiment", hue="model", palette="colorblind", notch=True)
     plt.xlabel(f"Performance spread across prompt formats\n5-shot, {N_SELECTED_TASKS} tasks from Natural Instructions")
     plt.ylabel("")
     plt.savefig(f"{args.root_dir}/all_boxplot.png", dpi=350, bbox_inches="tight")
     plt.close()
 
-    sns.boxplot(data=total_df, x="median_accuracy", y="model", hue="model", palette="colorblind")
+    sns.boxplot(data=total_df, x="median_accuracy", y="experiment", hue="model", palette="colorblind")
     plt.xlabel(f"Median accuracy across prompt formats\n5-shot, {N_SELECTED_TASKS} tasks from Natural Instructions")
     plt.ylabel("")
     plt.savefig(f"{args.root_dir}/median_accuracy_all_boxplot.png", dpi=350, bbox_inches="tight")
