@@ -5,7 +5,10 @@ Method: finetuning on instruction following dataset with prompt format augmentat
 ## Setup
 
 ```
-mamba create -n aa python=3.11 pytorch torchvision torchaudio pytorch-cuda=12.4 accelerate aiohttp bitsandbytes click datasets einops numpy matplotlib openai pandas peft protobuf safetensors scikit-learn scipy sentence-transformers sentencepiece statsmodels sympy tqdm transformers wandb xgboost  -c pytorch -c nvidia
+mamba create -n aa python=3.11 pytorch torchvision torchaudio pytorch-cuda=12.4 accelerate aiohttp click datasets einops numpy matplotlib openai pandas peft protobuf safetensors scikit-learn scipy sentence-transformers sentencepiece statsmodels sympy tqdm transformers wandb xgboost  -c pytorch -c nvidia
+
+pip install trl unsloth xformers bitsandbytes wandb
+mamba install -n aa ipykernel --update-deps --force-reinstall
 ```
 
 # [Source README] FormatSpread _or: How I learned to start worrying about prompt formatting_
