@@ -7,7 +7,7 @@ import numpy as np
 
 from grammar_definition import pointers_to_all_objects, create_pointer_action_type_pairs, \
     flatten, MAPPING_ALL_CATEGORIES, holistic_node_format_sanity_checks
-from utils import evaluate_prompt_format
+from utils import evaluate_prompt_format, solve_with_rank_based_scoring_ensembles
 
 random.seed(0)
 
@@ -15,6 +15,8 @@ random.seed(0)
 def value_assignment_str_to_indices(value_assignments, pointer_action_pairs):
     value_assignments_ids = []
     for assignment in value_assignments:
+        if assignment == []:
+            continue
         assert len(pointer_action_pairs) == len(assignment), f"{len(pointer_action_pairs)} != {len(assignment)}"
         assignment_ids = []
         for (_, _, action_type), assignment_value in zip(pointer_action_pairs, assignment):
@@ -23,6 +25,216 @@ def value_assignment_str_to_indices(value_assignments, pointer_action_pairs):
         value_assignments_ids.append(assignment_ids)
     return value_assignments_ids
 
+
+class TemplateEnsemblesAlgorithmAmongPrompts:
+    def __init__(self,
+                 structured_prompt_format,
+                 global_constraints,
+                 extra_params_structured_prompt_format,
+                 args_compute_node_score,
+                 objective,
+                 allow_text_action_type=True,
+                 original_multiple_choice_output_format=None):
+        self.args_compute_node_score = args_compute_node_score
+        self.metadata = {}
+        self.last_id_evaluated = {}
+        self.all_ensembles_accuracies = {}  # actually has the accuracies computed
+        self.objective = objective
+        self.extra_params_structured_prompt_format = extra_params_structured_prompt_format
+        self.original_multiple_choice_output_format = original_multiple_choice_output_format
+
+        # nodes (prompt formats) are represented by their solved_format
+        solved_format = self._get_node_from_format(structured_prompt_format)
+        self.all_structured_prompt_formats = {
+            solved_format: [structured_prompt_format, global_constraints]  # nodes
+        }
+
+        # all multiple choice classes in the original format, important to know how to update them when format changes
+        original_multiple_choice_classes = self.find_all_multiple_choice_output_classes(
+            solved_format, original_multiple_choice_output_format)
+        self.original_multiple_choice_classes = original_multiple_choice_classes
+
+        self.generation_order = {solved_format: 0}
+        self.edges = []
+        self.allow_text_action_type = allow_text_action_type
+
+        self.metadata = {}
+        self.metadata['extra_params'] = {'allow_text_action_type': self.allow_text_action_type}
+        self.metadata['ensembles'] = {}  # used in some extensions of this class
+        self.metadata['bit_representations'] = {}  # used in some extensions of this class
+
+        self.metadata['bit_representations'][solved_format] = [None]  # None = no actions have been done yet
+        self.metadata['extra_params']['objective'] = self.objective
+
+        all_pointers = pointers_to_all_objects(structured_prompt_format) + global_constraints
+        all_pointers_enumerated = [(e, i) for i, e in enumerate(all_pointers)]
+        pointer_action_pairs = create_pointer_action_type_pairs(
+            all_pointers_enumerated, allow_text_action_type=self.allow_text_action_type)
+        self.initial_structured_prompt_format = structured_prompt_format
+        self.initial_global_constraints = global_constraints
+        self.pointer_action_pairs = pointer_action_pairs
+
+        action_value_options = []
+        for a, b, action_type in pointer_action_pairs:
+            action_value_options.append(range(len(MAPPING_ALL_CATEGORIES[action_type])))
+        self.action_value_options = action_value_options
+
+    def find_all_multiple_choice_output_classes(self, resolved_node_format, output_format):
+        if not output_format:
+            return []
+
+        # output_format = "Option {enum1}", where "enum1" is the object name
+        object_name = output_format.split('{')[1].split('}')[0]
+
+        structured_prompt_format, global_constraints = self.all_structured_prompt_formats[resolved_node_format]
+        all_pointers = pointers_to_all_objects(structured_prompt_format) + global_constraints
+        pointer_to_object_list = [pointer
+                                  for pointer in all_pointers
+                                  if 'object_name' in pointer.__dict__ and pointer.object_name == object_name]
+        assert len(pointer_to_object_list) == 1
+        pointer_to_object = pointer_to_object_list[0]
+        return [output_format.format(**{object_name: pointer_to_object.chosen_number_format(idx)})
+                for idx in pointer_to_object.enumeration_item_id_list]
+
+    def _get_node_from_format(self, prompt_format):
+        extra_params = {'print_output_fields': True, 'exclude_text_field_for_output_fields': False}
+        return flatten(prompt_format.solve(extra_params)).replace('<|text|>', '{}')
+
+    def _copy_objects_before_expanding_node(self, solved_format):
+        # this function creates a copy of the passed format node (solved formats)
+        # this prevents accidentally modifying the previous node when searching a tree of prompt formats
+
+        structured_prompt_format, global_constraints = self.all_structured_prompt_formats[solved_format]
+        structured_prompt_format, global_constraints = copy.deepcopy((structured_prompt_format, global_constraints))
+
+        all_pointers = pointers_to_all_objects(structured_prompt_format) + global_constraints
+        all_pointers_enumerated = [(e, i) for i, e in enumerate(all_pointers)]
+
+        if 'all_pointers_enumerated' not in self.metadata:
+            self.metadata['all_pointers_enumerated'] = [
+                (str(type(e).__name__), self._get_node_from_format(e) if e.solve() else list(e.fields.keys())) for e, i
+                in all_pointers_enumerated
+            ]
+
+        return structured_prompt_format, global_constraints, all_pointers_enumerated
+
+    def list_node_accuracies(self):
+        return sorted([(v, k) for k, v in self.all_ensembles_accuracies.items()], reverse=True)
+
+    def save(self, filename):
+        import json
+        to_dump = {
+            # 'all_structured_prompt_formats': self.all_structured_prompt_formats,
+            'generation_order': self.generation_order,
+            'edges': self.edges,
+            'all_structured_prompt_formats_accuracies': self.all_ensembles_accuracies,
+            'metadata': self.metadata
+        }
+
+        json.dump(to_dump, open(filename, 'w'))
+
+    def _compute_node_score_from_resolved_prompt(self, resolved_prompts, num_samples_to_test=-1, ensemble_num=0):
+        #last_id_analyzed = self.last_id_evaluated.get(resolved_prompt, 0)
+        # interval_ids_to_test = (last_id_analyzed, last_id_analyzed + num_samples_to_test) \
+        #     if num_samples_to_test != -1 and last_id_analyzed is not None \
+        #     else (None, None)
+        #interval_ids_to_test = (ensemble_num * num_samples_to_test, (ensemble_num + 1) * num_samples_to_test)
+        interval_ids_to_test = (0, num_samples_to_test)
+        # transform the multiple choice output classes to evaluate in the same format as the examples presented
+        original_to_current_multiple_choice_classes_list = []
+        structured_prompt_format_list = []
+        for i in range(len(resolved_prompts)):
+            current_multiple_choice_classes = self.find_all_multiple_choice_output_classes(
+                resolved_prompts[i], self.original_multiple_choice_output_format)
+            original_to_current_multiple_choice_classes_list.append(
+                {k: v for k, v in zip(self.original_multiple_choice_classes, current_multiple_choice_classes)} \
+                    if self.original_multiple_choice_classes else {}
+                )
+
+            structured_prompt_format, global_constraints = self.all_structured_prompt_formats[resolved_prompts[i]]
+            structured_prompt_format_list.append(structured_prompt_format)
+        acc, history = solve_with_rank_based_scoring_ensembles(
+            **self.args_compute_node_score,
+            structured_prompt_format_list=structured_prompt_format_list,
+            original_to_current_multiple_choice_classes_list=original_to_current_multiple_choice_classes_list,
+            interval_ids_to_test=interval_ids_to_test
+        )
+        #self.last_id_evaluated[resolved_prompt] = interval_ids_to_test[1]
+        self.all_ensembles_accuracies[f'ensemble_{ensemble_num}'] = acc
+
+        self.metadata['ensembles'][ensemble_num] = history
+        return acc
+
+    def _compute_node_score(self, structured_prompt_format_list, num_samples_to_test=-1, ensemble_num=0):
+        # return (0, 0, 0), [0]
+        return self._compute_node_score_from_resolved_prompt(
+            resolved_prompts=[self._get_node_from_format(structured_prompt_format_list[i]) for i in range(len(structured_prompt_format_list))],
+            num_samples_to_test=num_samples_to_test,
+            ensemble_num=ensemble_num)
+
+    def evaluate_node(self, nodes_list, num_samples_to_test, ensemble_num):
+        # copy structured_prompt_format to avoid modifying the original
+        ensemble_size = len(nodes_list)
+
+        prompt_formats_list = []
+
+        for i in range(ensemble_size):
+            resolved_prompt = self._get_node_from_format(self.initial_structured_prompt_format)
+            structured_prompt_format, global_constraints, all_pointers_enumerated = \
+                self._copy_objects_before_expanding_node(resolved_prompt)
+            pointer_action_pairs = create_pointer_action_type_pairs(
+                all_pointers_enumerated, allow_text_action_type=self.allow_text_action_type)
+            assert len(self.pointer_action_pairs) == len(pointer_action_pairs)
+            assert all([b == e and c == f for (a, b, c), (d, e, f) in zip(self.pointer_action_pairs, pointer_action_pairs)])
+
+            # transform action value ids into a new structured_prompt_format
+            if nodes_list[i] != []:
+                all_action_values = []
+                all_action_value_names = []
+                for (element, element_id, action_type), action_value_id in zip(pointer_action_pairs, nodes_list[i]):
+                    action_value, action_value_name = MAPPING_ALL_CATEGORIES[action_type][int(action_value_id)]
+                    all_action_values.append(action_value)
+                    all_action_value_names.append(action_value_name)
+                    element.update_field(action_type, action_value)
+
+            # check if value assignments are invalid, and if so give the worst possible accuracy and do not store logs about it
+            # importantly, we do not store self.generation_order
+            if not holistic_node_format_sanity_checks(structured_prompt_format):
+                return -1e6 * (-1 if self.objective == 'lowest_accuracy' else 1)
+
+            # update logs that do not require accuracy
+            new_node = self._get_node_from_format(structured_prompt_format)
+            if new_node in self.generation_order:
+                self.metadata['bit_representations'][new_node].append(all_action_value_names)
+                return -1 if self.objective == 'lowest_accuracy' else 1
+
+            self.metadata['bit_representations'][new_node] = [all_action_value_names]
+            self.all_structured_prompt_formats[new_node] = [structured_prompt_format, global_constraints]
+            self.generation_order[new_node] = len(self.generation_order)
+            prompt_formats_list.append(structured_prompt_format)
+
+        # compute accuracy and update accuracy logs
+        acc = self._compute_node_score(prompt_formats_list, num_samples_to_test, ensemble_num)
+
+        self.all_ensembles_accuracies[f'ensemble_{ensemble_num}'] = acc
+
+        return -1 if self.objective == 'lowest_accuracy' else 1
+
+    def main(self, value_assignments: List[List[List[str]]], num_samples_to_test: int):
+        """
+        Fully evaluate all nodes (prompt formats) passed.
+
+        :param value_assignments: Value assignments for each format, and each field of the format.
+            value_assignments[i] shows all strings representing each field value for the i-th sampled format.
+        :param num_samples_to_test: number of samples to consider a node fully evaluated
+        """
+        value_assignments[0] = [[]] + value_assignments[0] 
+
+        for ensemble_num, value_assignment in tqdm(enumerate(value_assignments), desc='node ensembles'):
+            # convert from list(list(str)) to list(list(int))
+            # this func assumes same order as in action_value_pairs, but in text (not id in array, to be robust to changes)
+            value_assignments_ids = value_assignment_str_to_indices(value_assignment, self.pointer_action_pairs)
+            self.evaluate_node(value_assignments_ids, num_samples_to_test, ensemble_num)
 
 class GeneticAlgorithmAmongPrompts:
 

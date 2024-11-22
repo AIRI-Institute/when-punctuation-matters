@@ -7,7 +7,7 @@ from grammar_definition import flatten, _one_text_field
 from parsing_supernatural_instructions_tasks import SUPERNATURAL_INSTRUCTIONS_TASKS_WITH_NO_FORMAT, \
     create_initial_structured_prompt_format
 
-SUPERNATURAL_INSTRUCTIONS_DIRECTORY = '../natural-instructions/tasks'
+SUPERNATURAL_INSTRUCTIONS_DIRECTORY = '/home/mvchaychuk/natural-instructions/tasks'
 INSTRUCTION_INDUCTION_DIRECTORY = '../instruction-induction'
 
 STRING_ALL_CHARACTERS_FOR_REGEX_MATCHING = "([A-Za-z0-9α-ωΑ-Ω“”‘’′`,.…'-–—−:∶\(\)\[\]{}/%\?\!\\\" ;$≤≥≠†€₹→≡~∨⊃·°•∃∀ʻ&⁄\_#\\n𝑆𝑚√𝑠𝑁𝐴𝑒𝑅𝑇ι⟩⟨›‹ου‖♥‰�龍►➥™,‚∼⋅]+)"
