@@ -471,22 +471,21 @@ def solve_with_rank_based_scoring_refactor(args, dataset, selected_dataset_ids, 
         answer_logits = logits[:, -max_answer_length - 1:-1].clone()
         # print(f"{answer_logits.shape=}")
         # [batch_size * n_classes, max_answer_length, vocab_size]
-        answer_probs = F.softmax(answer_logits, dim=-1)
+        answer_logits = F.log_softmax(answer_logits, dim=-1)
 
         # BATCH CALIBRATION
         if args.apply_batch_calibfration:
-            answer_probs = answer_probs.reshape(actual_batch_size, len(output_classes), max_answer_length, -1)
+            answer_logits = answer_logits.reshape(actual_batch_size, len(output_classes), max_answer_length, -1)
 
-            p_hat = answer_probs.mean(dim=0)
+            p_hat = answer_logits.mean(dim=0, keepdim=True)
             
             if batch_calibration_pr is None:
                 batch_calibration_pr = (1 / (batch_idx + 1)) * p_hat
             else:
                 batch_calibration_pr = (batch_idx / (batch_idx + 1)) * batch_calibration_pr + (1 / (batch_idx + 1)) * p_hat
 
-            answer_probs = (answer_probs - batch_calibration_pr).reshape(actual_batch_size * len(output_classes), max_answer_length, -1)
+            answer_logits = (answer_logits - batch_calibration_pr).reshape(actual_batch_size * len(output_classes), max_answer_length, -1)
         
-        answer_logits = torch.log(answer_probs)
         logits_for_answer_tokens = torch.gather(answer_logits, dim=-1, index=output_tokens.unsqueeze(-1)).squeeze(-1)
         # print(f"{logits_for_answer_tokens.shape=}")
 
