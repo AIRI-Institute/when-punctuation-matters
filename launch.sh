@@ -31,7 +31,7 @@ do
         --batch_size_llm 8 \
         --num_samples 1000 \
         --model_name ${model} \
-        --n_shot 0 \
+        --n_shot 5 \
         --evaluation_metric probability_ranking \
         --evaluation_type full \
         --cache_dir /home/seleznev/.cache/huggingface \

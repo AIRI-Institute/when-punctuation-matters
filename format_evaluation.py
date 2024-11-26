@@ -16,6 +16,7 @@ def value_assignment_str_to_indices(value_assignments, pointer_action_pairs):
     value_assignments_ids = []
     for assignment in value_assignments:
         if assignment == []:
+            value_assignments_ids.append([])
             continue
         assert len(pointer_action_pairs) == len(assignment), f"{len(pointer_action_pairs)} != {len(assignment)}"
         assignment_ids = []
@@ -54,7 +55,7 @@ class TemplateEnsemblesAlgorithmAmongPrompts:
             solved_format, original_multiple_choice_output_format)
         self.original_multiple_choice_classes = original_multiple_choice_classes
 
-        self.generation_order = {solved_format: 0}
+        self.generation_order = {}
         self.edges = []
         self.allow_text_action_type = allow_text_action_type
 
@@ -63,7 +64,7 @@ class TemplateEnsemblesAlgorithmAmongPrompts:
         self.metadata['ensembles'] = {}  # used in some extensions of this class
         self.metadata['bit_representations'] = {}  # used in some extensions of this class
 
-        self.metadata['bit_representations'][solved_format] = [None]  # None = no actions have been done yet
+        # self.metadata['bit_representations'][solved_format] = [None]  # None = no actions have been done yet
         self.metadata['extra_params']['objective'] = self.objective
 
         all_pointers = pointers_to_all_objects(structured_prompt_format) + global_constraints
@@ -175,7 +176,6 @@ class TemplateEnsemblesAlgorithmAmongPrompts:
     def evaluate_node(self, nodes_list, num_samples_to_test, ensemble_num):
         # copy structured_prompt_format to avoid modifying the original
         ensemble_size = len(nodes_list)
-
         prompt_formats_list = []
 
         for i in range(ensemble_size):
@@ -196,6 +196,9 @@ class TemplateEnsemblesAlgorithmAmongPrompts:
                     all_action_values.append(action_value)
                     all_action_value_names.append(action_value_name)
                     element.update_field(action_type, action_value)
+            else:
+                all_action_values = [None]
+                all_action_value_names = [None]
 
             # check if value assignments are invalid, and if so give the worst possible accuracy and do not store logs about it
             # importantly, we do not store self.generation_order
@@ -207,12 +210,10 @@ class TemplateEnsemblesAlgorithmAmongPrompts:
             if new_node in self.generation_order:
                 self.metadata['bit_representations'][new_node].append(all_action_value_names)
                 return -1 if self.objective == 'lowest_accuracy' else 1
-
             self.metadata['bit_representations'][new_node] = [all_action_value_names]
             self.all_structured_prompt_formats[new_node] = [structured_prompt_format, global_constraints]
             self.generation_order[new_node] = len(self.generation_order)
             prompt_formats_list.append(structured_prompt_format)
-
         # compute accuracy and update accuracy logs
         acc = self._compute_node_score(prompt_formats_list, num_samples_to_test, ensemble_num)
 
@@ -228,8 +229,7 @@ class TemplateEnsemblesAlgorithmAmongPrompts:
             value_assignments[i] shows all strings representing each field value for the i-th sampled format.
         :param num_samples_to_test: number of samples to consider a node fully evaluated
         """
-        value_assignments[0] = [[]] + value_assignments[0] 
-
+        value_assignments[0] = [[]] + value_assignments[0]
         for ensemble_num, value_assignment in tqdm(enumerate(value_assignments), desc='node ensembles'):
             # convert from list(list(str)) to list(list(int))
             # this func assumes same order as in action_value_pairs, but in text (not id in array, to be robust to changes)

@@ -148,7 +148,6 @@ def _setup_full_prompts_to_test_on(input_fields_list, regex_key_idx_list, select
     full_prompt_string_list = []
     for input_element, idx in zip(inputs, selected_dataset_ids):
         full_prompt_string_list.append(input_element if n_shot == 0 else demonstration_string + "\n\n" + input_element)
-
     return full_prompt_string_list, selected_dataset_ids
 
 
@@ -455,7 +454,6 @@ def solve_with_rank_based_scoring_refactor(args, dataset, selected_dataset_ids, 
         batch_end_idx = (batch_idx + 1) * args.batch_size_llm
         prompts = input_prompt_string_list[batch_start_idx:batch_end_idx]
         actual_batch_size = len(prompts)
-
         inputs = _tokenize_prompts_with_answers(prompts, output_classes, tokenizer).to(model.device)
         # inputs.input_ids has shape [batch_size * n_classes, seq_len]
         # print(f"{inputs['input_ids'].shape=}")
@@ -471,8 +469,8 @@ def solve_with_rank_based_scoring_refactor(args, dataset, selected_dataset_ids, 
         answer_logits = logits[:, -max_answer_length - 1:-1].clone()
         # print(f"{answer_logits.shape=}")
         # [batch_size * n_classes, max_answer_length, vocab_size]
-        answer_logits = F.log_softmax(answer_logits, dim=-1)
-
+        answer_logits = F.softmax(answer_logits, dim=-1)
+        answer_logits = torch.log(answer_logits)
         # BATCH CALIBRATION
         if args.apply_batch_calibfration:
             answer_logits = answer_logits.reshape(actual_batch_size, len(output_classes), max_answer_length, -1)
@@ -571,7 +569,6 @@ def solve_with_rank_based_scoring_ensembles(args, dataset, input_fields_list, re
                 input_fields_list, regex_key_idx_list, selected_dataset_ids,
                 demos_fields_list, demos_regex_key_idx_list, demonstrations_outputs, demonstration_definition,
                 structured_prompt_format_list[i], original_to_current_multiple_choice_classes_list[i], (batch_start_idx, batch_end_idx), args.n_shot)
-        
             prompts = input_prompt_string_list
             actual_batch_size = len(prompts)
 
@@ -594,9 +591,8 @@ def solve_with_rank_based_scoring_ensembles(args, dataset, input_fields_list, re
                 answer_probs = F.softmax(answer_logits, dim=-1)
             else:
                 answer_probs += F.softmax(answer_logits, dim=-1)
-        
         answer_probs /= len(structured_prompt_format_list)
-        answer_logits = torch.log(answer_logits)
+        answer_logits = torch.log(answer_probs)
         logits_for_answer_tokens = torch.gather(answer_logits, dim=-1, index=output_tokens.unsqueeze(-1)).squeeze(-1)
         # print(f"{logits_for_answer_tokens.shape=}")
 
@@ -614,8 +610,7 @@ def solve_with_rank_based_scoring_ensembles(args, dataset, input_fields_list, re
 
         for idx in range(actual_batch_size):
             generation = output_classes[chosen_answer_indices[idx].item()]
-            expected_output = dataset[selected_dataset_ids[batch_start_idx + idx]]["output"][0]
-
+            expected_output = dataset_updated[selected_dataset_ids[batch_start_idx + idx]]["output"][0]
             accuracy["right"].append(generation == expected_output)
             accuracy["wrong"].append(generation != expected_output and generation in output_classes)
             accuracy["other"].append(generation not in output_classes)
@@ -624,7 +619,7 @@ def solve_with_rank_based_scoring_ensembles(args, dataset, input_fields_list, re
 
             logs.append(
                 {
-                    'entry': dataset[selected_dataset_ids[batch_idx + idx]],
+                    'entry': dataset_updated[selected_dataset_ids[batch_idx + idx]],
                     'dataset_idx': idx,
                     'generation': generation,
                     'answer': expected_output,
