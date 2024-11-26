@@ -32,6 +32,9 @@ do
         --num_samples 1000 \
         --model_name ${model} \
         --n_shot 5 \
+        --num_ensembles 4 \
+        --ensemble_size 5 \
+        --apply_batch_calibration 1 \
         --evaluation_metric probability_ranking \
         --evaluation_type full \
         --cache_dir /home/seleznev/.cache/huggingface \

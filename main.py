@@ -327,7 +327,7 @@ def make_parser():
     parser.add_argument('--n_shot', type=int, default=1)
     parser.add_argument('--num_ensembles', type=int, default=10)
     parser.add_argument('--ensemble_size', type=int, default=10)
-    parser.add_argument('--apply_batch_calibfration', type=int, default=0)
+    parser.add_argument('--apply_batch_calibration', type=int, default=0)
 
     # params to load models and how to use them
     parser.add_argument('--model_name', type=str, default=None)

@@ -472,7 +472,7 @@ def solve_with_rank_based_scoring_refactor(args, dataset, selected_dataset_ids, 
         answer_logits = F.softmax(answer_logits, dim=-1)
         answer_logits = torch.log(answer_logits)
         # BATCH CALIBRATION
-        if args.apply_batch_calibfration:
+        if args.apply_batch_calibration:
             answer_logits = answer_logits.reshape(actual_batch_size, len(output_classes), max_answer_length, -1)
 
             p_hat = answer_logits.mean(dim=0, keepdim=True)
