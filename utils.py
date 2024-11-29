@@ -497,6 +497,16 @@ def solve_with_rank_based_scoring_refactor(args, dataset, selected_dataset_ids, 
         # [batch_size * n_classes]
         cumulative_log_probs = cumulative_log_probs.reshape(actual_batch_size, len(output_classes))
 
+        # if args.apply_batch_calibration:
+        #     p_hat = cumulative_log_probs.mean(dim=0, keepdim=True)
+            
+        #     if batch_calibration_pr is None:
+        #         batch_calibration_pr = (1 / (batch_idx + 1)) * p_hat
+        #     else:
+        #         batch_calibration_pr = (batch_idx / (batch_idx + 1)) * batch_calibration_pr + (1 / (batch_idx + 1)) * p_hat
+
+        #     cumulative_log_probs = cumulative_log_probs - batch_calibration_pr
+
         chosen_answer_indices = cumulative_log_probs.argmax(dim=-1).cpu()
 
         for idx in range(actual_batch_size):
@@ -563,7 +573,7 @@ def solve_with_rank_based_scoring_ensembles(args, dataset, input_fields_list, re
         batch_start_idx = batch_idx * args.batch_size_llm
         batch_end_idx = (batch_idx + 1) * args.batch_size_llm
 
-        answer_probs = None
+        cumulative_probs = None
         for i in range(len(structured_prompt_format_list)):
             input_prompt_string_list = _setup_full_prompts_to_test_on_batch(
                 input_fields_list, regex_key_idx_list, selected_dataset_ids,
@@ -587,26 +597,25 @@ def solve_with_rank_based_scoring_ensembles(args, dataset, input_fields_list, re
             answer_logits = logits[:, -max_answer_length - 1:-1].clone()
             # print(f"{answer_logits.shape=}")
             # [batch_size * n_classes, max_answer_length, vocab_size]
-            if answer_probs is None:
-                answer_probs = F.softmax(answer_logits, dim=-1)
+
+            logits_for_answer_tokens = torch.gather(answer_logits, dim=-1, index=output_tokens.unsqueeze(-1)).squeeze(-1)
+            # print(f"{logits_for_answer_tokens.shape=}")
+            # mask out tokens, which do not correspond to answer tokens
+            # assumes left-side padding
+            for i, length in enumerate(answer_lengths * actual_batch_size):
+                logits_for_answer_tokens[i, :-length] = 0
+
+            # [batch_size * n_classes, max_answer_length]
+            cumulative_logits = logits_for_answer_tokens.sum(-1)
+            # [batch_size * n_classes]
+
+            if cumulative_probs is None:
+                cumulative_probs = F.softmax(cumulative_logits.reshape(actual_batch_size, len(output_classes)), dim=-1)
             else:
-                answer_probs += F.softmax(answer_logits, dim=-1)
-        answer_probs /= len(structured_prompt_format_list)
-        answer_logits = torch.log(answer_probs)
-        logits_for_answer_tokens = torch.gather(answer_logits, dim=-1, index=output_tokens.unsqueeze(-1)).squeeze(-1)
-        # print(f"{logits_for_answer_tokens.shape=}")
+                cumulative_probs += F.softmax(cumulative_logits.reshape(actual_batch_size, len(output_classes)), dim=-1)
 
-        # mask out tokens, which do not correspond to answer tokens
-        # assumes left-side padding
-        for i, length in enumerate(answer_lengths * actual_batch_size):
-            logits_for_answer_tokens[i, :-length] = 0
-
-        # [batch_size * n_classes, max_answer_length]
-        cumulative_log_probs = logits_for_answer_tokens.sum(-1)
-        # [batch_size * n_classes]
-        cumulative_log_probs = cumulative_log_probs.reshape(actual_batch_size, len(output_classes))
-
-        chosen_answer_indices = cumulative_log_probs.argmax(dim=-1).cpu()
+        cumulative_probs /= len(structured_prompt_format_list)
+        chosen_answer_indices = cumulative_probs.argmax(dim=-1).cpu()
 
         for idx in range(actual_batch_size):
             generation = output_classes[chosen_answer_indices[idx].item()]
