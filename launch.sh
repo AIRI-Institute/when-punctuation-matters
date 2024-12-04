@@ -12,7 +12,7 @@ export CUDA_HOME=/usr/local/cuda-12.4
 export PATH=$CUDA_HOME/bin:$PATH
 export LRU_CACHE_CAPACITY=1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
-# export DISABLE_CHAT_TEMPLATE="1"
+export DISABLE_CHAT_TEMPLATE="1"
 
 echo "which python:" $(which python)
 echo "parsed experiment name:" $exp_name
@@ -36,5 +36,5 @@ do
         --evaluation_type full \
         --cache_dir /home/seleznev/.cache/huggingface \
         --output_dir exp/${exp_name} \
-        --nodes_to_evaluate_filepath train_test_splits/holistic_random_sample_${task}_nodes_${num_formats_to_analyze}_textdisabled.json
+        --nodes_to_evaluate_filepath train_test_splits/compositional_separator_space/holistic_random_sample_${task}_nodes_${num_formats_to_analyze}_textdisabled.json
 done
