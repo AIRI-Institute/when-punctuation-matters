@@ -170,7 +170,7 @@ class GeneticAlgorithmAmongPrompts:
             resolved_prompt=self._get_node_from_format(structured_prompt_format),
             num_samples_to_test=num_samples_to_test)
 
-    def evaluate_node(self, solution, num_samples_to_test):
+    def evaluate_node(self, solution: List[int], num_samples_to_test):
 
         # copy structured_prompt_format to avoid modifying the original
         resolved_prompt = self._get_node_from_format(self.initial_structured_prompt_format)
