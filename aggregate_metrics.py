@@ -100,20 +100,19 @@ if __name__ == "__main__":
     experiment_names = args.experiment_names if args.experiment_names else \
         sorted([filename.name for filename in Path(args.root_dir).iterdir() if filename.is_dir()])
 
-    experiment_names = [name for name in experiment_names if "Mistral" not in name]
+    # experiment_names = [name for name in experiment_names if "Mistral" not in name]
+    experiment_names = [name for name in experiment_names if not "zeroshot" in name and not "test" in name]
+    experiment_names = [name for name in experiment_names if "Llama-3.2-3B" in name and "instruct" in name.lower() and not "batch" in name]
+    # experiment_names = [name for name in experiment_names if ("Qwen" in name or "falcon" in name) and "instruct" in name.lower()]
     print(experiment_names)
 
     for experiment_name in tqdm(experiment_names, desc="models"):
         subdir = Path(args.root_dir) / experiment_name
 
-        if experiment_name.endswith("-chattemplate"):
-            model_name = experiment_name[:-len("-chattemplate")]
-        elif experiment_name.endswith("-nochattemplate"):
-            model_name = experiment_name[:-len("-nochattemplate")]
-        else:
-            model_name = experiment_name
+        model_name = experiment_name.split("---")[0]
 
-        pattern = f"metadataholistic*{model_name}*_numnodes_{args.num_nodes}*.json"
+        num_nodes = 5 * (args.num_nodes + 1) - 1 if "ensemble" in experiment_name else args.num_nodes
+        pattern = f"metadataholistic*{model_name}*_numnodes_{num_nodes}*.json"
         evaluated_tasks_result_paths = list(subdir.glob(pattern))
         if len(evaluated_tasks_result_paths) != N_SELECTED_TASKS:
             print(f"ATTENTION: {experiment_name} is only evaluated on {len(evaluated_tasks_result_paths)} tasks")
@@ -127,13 +126,15 @@ if __name__ == "__main__":
     
     total_df = pd.concat(total_df)
 
-    sns.boxplot(data=total_df, x="spread", y="experiment", hue="model", palette="colorblind", notch=True)
+    plt.figure(figsize=(12, 8))
+    sns.boxplot(data=total_df, x="spread", y="experiment", hue="model", palette="colorblind", legend=False, notch=True)
     plt.xlabel(f"Performance spread across prompt formats\n5-shot, {N_SELECTED_TASKS} tasks from Natural Instructions")
     plt.ylabel("")
     plt.savefig(f"{args.root_dir}/all_boxplot.png", dpi=350, bbox_inches="tight")
     plt.close()
 
-    sns.boxplot(data=total_df, x="median_accuracy", y="experiment", hue="model", palette="colorblind")
+    plt.figure(figsize=(12, 8))
+    sns.boxplot(data=total_df, x="median_accuracy", y="experiment", hue="model", palette="colorblind", legend=False)
     plt.xlabel(f"Median accuracy across prompt formats\n5-shot, {N_SELECTED_TASKS} tasks from Natural Instructions")
     plt.ylabel("")
     plt.savefig(f"{args.root_dir}/median_accuracy_all_boxplot.png", dpi=350, bbox_inches="tight")
