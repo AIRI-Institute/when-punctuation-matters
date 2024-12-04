@@ -21,7 +21,29 @@ def _load_model(args):
         import torch
         cache_dir = args.cache_dir
 
-        if 'Llama-2-70b-hf' in args.model_name or args.use_4bit:
+        if "lora" in args.model_name:
+            from unsloth import FastLanguageModel
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=args.model_name,
+                max_seq_length=2048,
+                dtype=torch.bfloat16,
+                load_in_4bit=False,
+            )
+            FastLanguageModel.for_inference(model) # Enable native 2x faster inference
+
+            # Add special padding token
+            special_tokens_dict = {'pad_token': '<pad>'}
+            num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
+            tokenizer.padding_side = "left"
+            print('We have added', num_added_toks, 'tokens')
+
+            # Resize the token embeddings
+            model.resize_token_embeddings(len(tokenizer))
+
+            # Set `pad_token_id` in model's configuration
+            model.config.pad_token_id = tokenizer.pad_token_id
+
+        elif 'Llama-2-70b-hf' in args.model_name or args.use_4bit:
             # assert args.batch_size_llm == 1
             from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
