@@ -8,6 +8,7 @@ from typing import List
 import openai
 import torch
 import torch.nn.functional as F
+import numpy as np
 from transformers import BatchEncoding
 
 from grammar_definition import apply_prompt_format, flatten
@@ -209,8 +210,12 @@ def evaluate_prompt_format(
 
     # 3. evaluate
     if args.evaluation_metric == 'probability_ranking':
-        return solve_with_rank_based_scoring_refactor(
-            args, dataset_updated, selected_dataset_ids, model, tokenizer, input_prompt_string_list)
+        if args.sensitivity_aware:
+            return solve_with_sensitivity_aware(
+                args, dataset_updated, selected_dataset_ids, model, tokenizer, input_prompt_string_list)
+        else:
+            return solve_with_rank_based_scoring_refactor(
+                args, dataset_updated, selected_dataset_ids, model, tokenizer, input_prompt_string_list)
 
     elif args.evaluation_metric == 'exact_prefix_matching':
         logs = generate_text_with_metadata(
@@ -429,6 +434,122 @@ def solve_with_rank_based_scoring(
 # 2) implement Temlate Ensembles separately
 # -- how to remain consistent with original code?
 
+def create_synthetic(args, input_ids, max_answer_length, tokenizer, vocab):
+    prompt = input_ids[:, :-max_answer_length]
+    mask = (prompt == tokenizer.pad_token_id) | (prompt == tokenizer.bos_token_id) | (prompt == tokenizer.eos_token_id)
+    unmasked_size = len(prompt[~mask])
+    num_tokens_to_replace = int(unmasked_size * args.sad_percent_to_replace)
+    random_indices = torch.randperm(unmasked_size)[:num_tokens_to_replace]
+    tokens_to_replace = prompt[~mask]
+    tokens_to_replace[random_indices] = torch.tensor(np.random.choice(vocab, num_tokens_to_replace))
+    prompt[~mask] = tokens_to_replace
+    return input_ids
+    
+
+@torch.inference_mode()
+def solve_with_sensitivity_aware(args, dataset, selected_dataset_ids, model, tokenizer, input_prompt_string_list):
+    output_classes = sorted(list(set([dataset[idx]['output'][0] for idx in selected_dataset_ids])))
+    assert len(output_classes) < 100
+    assert tokenizer is not None and model is not None
+
+    answer_lengths = [len(a) for a in tokenizer(output_classes, add_special_tokens=False)["input_ids"]]
+    max_answer_length = max(answer_lengths)
+
+    accuracy = {
+        'right': [],
+        'wrong': [],
+        'other': [],
+        'total': 0
+    }
+    logs = []
+    vocab = tokenizer.get_vocab()
+    filtered_vocab = [index for token, index in vocab.items() if token not in tokenizer.special_tokens_map.values()]
+
+    for batch_idx in tqdm(range(math.ceil(len(input_prompt_string_list) / args.batch_size_llm)), desc="batches"):
+        batch_start_idx = batch_idx * args.batch_size_llm
+        batch_end_idx = (batch_idx + 1) * args.batch_size_llm
+        prompts = input_prompt_string_list[batch_start_idx:batch_end_idx]
+        actual_batch_size = len(prompts)
+        inputs = _tokenize_prompts_with_answers(prompts, output_classes, tokenizer) #.to(model.device)
+
+        real = None
+        synthetic = []
+
+        for template_num in range(args.ensemble_size):
+            if template_num == 0:
+                model_inputs = inputs.to(model.device)
+            else:
+                model_inputs = copy.deepcopy(inputs).to('cpu')
+                model_inputs['input_ids'] = create_synthetic(args, model_inputs['input_ids'], max_answer_length, tokenizer, filtered_vocab)
+                model_inputs = model_inputs.to(model.device)
+            # inputs.input_ids has shape [batch_size * n_classes, seq_len]
+            # print(f"{inputs['input_ids'].shape=}")
+
+            output_tokens = model_inputs["input_ids"][:, -max_answer_length:]
+            # [batch_size * n_classes, max_answer_length]
+
+            logits = model(**model_inputs).logits.detach()
+            # [batch_size * n_classes, seq_len, vocab_size]
+            # print(f"{batch_size_llm=}, {actual_batch_size=}")
+            # print(f"{max_answer_length=}")
+
+            answer_logits = logits[:, -max_answer_length - 1:-1].clone()
+            # print(f"{answer_logits.shape=}")
+            # [batch_size * n_classes, max_answer_length, vocab_size]
+            answer_logits = F.log_softmax(answer_logits, dim=-1)
+            # BATCH CALIBRATION
+            
+            logits_for_answer_tokens = torch.gather(answer_logits, dim=-1, index=output_tokens.unsqueeze(-1)).squeeze(-1)
+            # print(f"{logits_for_answer_tokens.shape=}")
+
+            # mask out tokens, which do not correspond to answer tokens
+            # assumes left-side padding
+            for i, length in enumerate(answer_lengths * actual_batch_size):
+                logits_for_answer_tokens[i, :-length] = 0
+
+            # [batch_size * n_classes, max_answer_length]
+            cumulative_log_probs = logits_for_answer_tokens.sum(-1)
+            # [batch_size * n_classes]
+            cumulative_log_probs = cumulative_log_probs.reshape(actual_batch_size, len(output_classes))
+
+            if template_num == 0:
+                real = cumulative_log_probs
+            else:
+                synthetic.append(cumulative_log_probs)
+
+        cumulative_log_probs = args.sad_alpha * real - (1 - args.sad_alpha) * torch.stack(synthetic, dim=0).var(dim=0)
+        chosen_answer_indices = cumulative_log_probs.argmax(dim=-1).cpu()
+
+        for idx in range(actual_batch_size):
+            generation = output_classes[chosen_answer_indices[idx].item()]
+            expected_output = dataset[selected_dataset_ids[batch_start_idx + idx]]["output"][0]
+
+            accuracy["right"].append(generation == expected_output)
+            accuracy["wrong"].append(generation != expected_output and generation in output_classes)
+            accuracy["other"].append(generation not in output_classes)
+            # by construction chosen answer is always from output_classes, but this might be useful for free-form answers later
+            accuracy["total"] += 1
+
+            logs.append(
+                {
+                    'entry': dataset[selected_dataset_ids[batch_idx + idx]],
+                    'dataset_idx': idx,
+                    'generation': generation,
+                    'answer': expected_output,
+                    'output_classes': output_classes,
+                    'full_prompt_string': input_prompt_string_list[batch_start_idx + idx],
+                    'eval_type': 'ranking',
+                    'scores': None,
+                }
+            )
+
+        del logits
+        torch.cuda.empty_cache()
+
+    return (sum(accuracy['right']) * 1.0 / max(accuracy['total'], 1),
+            sum(accuracy['wrong']) * 1.0 / max(accuracy['total'], 1),
+            accuracy['total']), (accuracy, logs)
+
 ### REFACTOR ###
 @torch.inference_mode()
 def solve_with_rank_based_scoring_refactor(args, dataset, selected_dataset_ids, model, tokenizer, input_prompt_string_list):
@@ -455,6 +576,7 @@ def solve_with_rank_based_scoring_refactor(args, dataset, selected_dataset_ids, 
         prompts = input_prompt_string_list[batch_start_idx:batch_end_idx]
         actual_batch_size = len(prompts)
         inputs = _tokenize_prompts_with_answers(prompts, output_classes, tokenizer).to(model.device)
+
         # inputs.input_ids has shape [batch_size * n_classes, seq_len]
         # print(f"{inputs['input_ids'].shape=}")
 
@@ -469,8 +591,7 @@ def solve_with_rank_based_scoring_refactor(args, dataset, selected_dataset_ids, 
         answer_logits = logits[:, -max_answer_length - 1:-1].clone()
         # print(f"{answer_logits.shape=}")
         # [batch_size * n_classes, max_answer_length, vocab_size]
-        answer_logits = F.softmax(answer_logits, dim=-1)
-        answer_logits = torch.log(answer_logits)
+        answer_logits = F.log_softmax(answer_logits, dim=-1)
         # BATCH CALIBRATION
         if args.apply_batch_calibration:
             answer_logits = answer_logits.reshape(actual_batch_size, len(output_classes), max_answer_length, -1)

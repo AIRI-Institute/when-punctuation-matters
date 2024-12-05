@@ -50,7 +50,7 @@ def _load_model(args):
             # Set `pad_token_id` in model's configuration
             model.config.pad_token_id = tokenizer.pad_token_id
 
-        elif any(t in args.model_name.lower() for t in ['llama', 'falcon', 'mistral', 'mixtral', "qwen"]) \
+        elif any(t in args.model_name.lower() for t in ['llama', 'falcon', 'mistral', 'mixtral', "qwen", 'gemma']) \
                 and args.batch_size_llm is not None:
             from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -328,6 +328,10 @@ def make_parser():
     parser.add_argument('--num_ensembles', type=int, default=10)
     parser.add_argument('--ensemble_size', type=int, default=10)
     parser.add_argument('--apply_batch_calibration', type=int, default=0)
+
+    parser.add_argument('--sensitivity_aware', type=int, default=0)
+    parser.add_argument('--sad_percent_to_replace', type=float, default=0.2)
+    parser.add_argument('--sad_alpha', type=float, default=0.6)
 
     # params to load models and how to use them
     parser.add_argument('--model_name', type=str, default=None)
