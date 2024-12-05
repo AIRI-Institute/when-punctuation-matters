@@ -7,7 +7,7 @@ import random
 
 from data_loading import load_supernatural_instructions_task, load_instruction_induction_task
 from format_evaluation import GeneticAlgorithmAmongPrompts, value_assignment_str_to_indices, \
-    ThompsonSamplingAlgorithmAmongPrompts
+    ThompsonSamplingAlgorithmAmongPrompts, TemplateEnsemblesAlgorithmAmongPrompts
 from grammar_definition import pointers_to_all_objects, create_pointer_action_type_pairs, MAPPING_ALL_CATEGORIES, \
     holistic_node_format_sanity_checks
 
@@ -72,7 +72,7 @@ def _load_model(args):
             # Set `pad_token_id` in model's configuration
             model.config.pad_token_id = tokenizer.pad_token_id
 
-        elif any(t in args.model_name.lower() for t in ['llama', 'falcon', 'mistral', 'mixtral', "qwen"]) \
+        elif any(t in args.model_name.lower() for t in ['llama', 'falcon', 'mistral', 'mixtral', "qwen", 'gemma']) \
                 and args.batch_size_llm is not None:
             from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -316,6 +316,7 @@ def _get_output_filename(args, disable_text_action_type):
         filename = f'metadataholistic_{disable_text_action_type}_{scoring_type}_{task_filename_to_print}_search_model_{args.model_name.split("/")[-1]}_nshot_{args.n_shot}_numedges_{args.num_edges_to_analyze}_numsamples_{args.num_samples}{use_4bit_str}'
     elif args.extend_graph_paths_from_file:
         # it is exactly like args.num_formats_to_analyze, but from a specific file
+        num_new_paths=300 # Warning fix, remove in the future
         filename = f'metadataholistic_{disable_text_action_type}_{scoring_type}_{task_filename_to_print}_search_model_{args.model_name.split("/")[-1]}_nshot_{args.n_shot}_numnodes-extension_{num_new_paths}_numsamples_{args.num_samples}{use_4bit_str}'
     else:
         assert False, "No output file format defined."
@@ -342,10 +343,17 @@ def make_parser():
     # params to set up evaluation settings
     parser.add_argument('--num_samples', type=int, default=1000, help='Maximum number of samples to evaluate for each format.')
     parser.add_argument('--evaluation_metric', choices=['exact_prefix_matching', 'probability_ranking'])
-    parser.add_argument('--evaluation_type', type=str, choices=['full', 'format_spread'],
+    parser.add_argument('--evaluation_type', type=str, choices=['full', 'format_spread', 'ensembles'],
                         help='Determines how to evaluate the array of formats defined. '
                              'Options are full evaluation of each node, or use Thompson Sampling to quickly find the format spread.')
     parser.add_argument('--n_shot', type=int, default=1)
+    parser.add_argument('--num_ensembles', type=int, default=10)
+    parser.add_argument('--ensemble_size', type=int, default=10)
+    parser.add_argument('--apply_batch_calibration', type=int, default=0)
+
+    parser.add_argument('--sensitivity_aware', type=int, default=0)
+    parser.add_argument('--sad_percent_to_replace', type=float, default=0.2)
+    parser.add_argument('--sad_alpha', type=float, default=0.6)
 
     # params to load models and how to use them
     parser.add_argument('--model_name', type=str, default=None)
@@ -522,6 +530,35 @@ def main():
         acc = search_tree.list_node_accuracies()
         print('Best Node:', acc[0])
         print('Worst Node:', acc[-1])
+
+    elif args.evaluation_type == 'ensembles':
+        search_tree = TemplateEnsemblesAlgorithmAmongPrompts(
+            structured_prompt_format,
+            global_constraints,
+            extra_params_structured_prompt_format,
+            args_compute_node_score=args_compute_node_score,
+            objective='lowest_accuracy',  # dummy in this mode
+            allow_text_action_type=args.allow_text_action_type,
+            original_multiple_choice_output_format=original_multiple_choice_output_format
+        )
+
+        value_assignments_ensembles = []
+        index = 0
+
+        for i in range(args.num_ensembles - 1):
+            value_assignments_ensembles.append(valid_value_assignments[i * args.ensemble_size:(i + 1) * args.ensemble_size])
+
+        value_assignments_ensembles = [valid_value_assignments[(args.num_ensembles - 1) * args.ensemble_size:args.num_ensembles * args.ensemble_size]] + value_assignments_ensembles
+
+        print('value_assignments_ensembles', value_assignments_ensembles)
+        search_tree.main(
+            value_assignments=value_assignments_ensembles,
+            num_samples_to_test=args.num_samples
+        )
+
+        acc = search_tree.list_node_accuracies()
+        print('Best Ensemble:', acc[0])
+        print('Worst Ensemble:', acc[-1])
 
     search_tree.save(os.path.join(args.output_dir, f'{_get_output_filename(args, disable_text_action_type)}.json'))
 
