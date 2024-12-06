@@ -8,6 +8,7 @@ from trl import SFTTrainer
 from unsloth import FastLanguageModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template, standardize_sharegpt, train_on_responses_only
 from transformers import TrainingArguments, DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
+from datasets import Dataset
 
 from generate_train_val_test_formats import VANILLA_MAPPING_ALL_CATEGORIES, COMPOSITIONAL_TRAIN_SEPARATOR_LIST, COMPOSITIONAL_TRAIN_SPACE_LIST
 VANILLA_MAPPING_ALL_CATEGORIES["chosen_space"] = [(e, e) for e in COMPOSITIONAL_TRAIN_SPACE_LIST]
@@ -26,50 +27,49 @@ def load_model(name, max_seq_length, dtype, load_in_4bit, device):
     return model, tokenizer
 
 
-def get_hermes_dataset():
+def get_hermes_dataset(n_samples: int = 8000, n_augmentations: int = 4):
     seed = 23
     random.seed(seed)
-    verbalizer_first = "question"
-    verbalizer_second = "answer"
+    verbalizer_first_options = ["question", "query", "Q"]
+    verbalizer_second_options = ["answer", "reply", "A"]
 
-    def formatting_prompts_func(examples):
-        # TODO: insert augmentations here
-        # x fix random seed
-        # - how to handle multiple-choice queries?
-        batch_conversations = examples["conversations"]
+    def augment_conversation(conversation):
+        filtered_conversation = [msg for msg in conversation if msg["from"] in ("human", "gpt")]
+        filtered_conversation = filtered_conversation[:2]
+        assert filtered_conversation[0]["from"] == "human"
+        assert filtered_conversation[1]["from"] == "gpt"
 
-        formatted_conversations = []
-        for conversation in batch_conversations:
-            filtered_conversation = [msg for msg in conversation if msg["from"] in ("human", "gpt")]
-            filtered_conversation = filtered_conversation[:2]
-            assert filtered_conversation[0]["from"] == "human"
-            assert filtered_conversation[1]["from"] == "gpt"
+        current_text_descriptor_fn = random.choice(VANILLA_MAPPING_ALL_CATEGORIES["text_descriptor_fn"])[0]
+        _verbalizer_first = current_text_descriptor_fn(random.choice(verbalizer_first_options))
+        _verbalizer_second = current_text_descriptor_fn(random.choice(verbalizer_second_options))
+        _separator = random.choice(VANILLA_MAPPING_ALL_CATEGORIES["chosen_separator"])[0]
+        if "\n" in _separator:
+            _space = random.choice([e[0] for e in VANILLA_MAPPING_ALL_CATEGORIES["chosen_space"] if "\n" in e[0]])
+        else:
+            _space = random.choice(VANILLA_MAPPING_ALL_CATEGORIES["chosen_space"])[0]
 
-            current_text_descriptor_fn = random.choice(VANILLA_MAPPING_ALL_CATEGORIES["text_descriptor_fn"])[0]
-            _verbalizer_first = current_text_descriptor_fn(verbalizer_first)
-            _verbalizer_second = current_text_descriptor_fn(verbalizer_second)
-            _separator = random.choice(VANILLA_MAPPING_ALL_CATEGORIES["chosen_separator"])[0]
-            if "\n" in _separator:
-                _space = random.choice([e[0] for e in VANILLA_MAPPING_ALL_CATEGORIES["chosen_space"] if "\n" in e[0]])
-            else:
-                _space = random.choice(VANILLA_MAPPING_ALL_CATEGORIES["chosen_space"])[0]
-
-            formatted_conversations.append(
-                f"{_verbalizer_first}{_separator}{filtered_conversation[0]['value']}{_space}"\
-                f"{_verbalizer_second}{_separator}{filtered_conversation[1]['value']}"
-            )
-
-        return {"text": formatted_conversations}
+        text = f"{_verbalizer_first}{_separator}{filtered_conversation[0]['value']}{_space}"\
+               f"{_verbalizer_second}{_separator}{filtered_conversation[1]['value']}"
+        
+        return {"text": text}
 
     dataset_name = "teknium/OpenHermes-2.5"
     dataset = load_dataset(dataset_name, split="train")
-    dataset = dataset.map(formatting_prompts_func, batched=True)
-    dataset = dataset.shuffle(seed)
+    dataset = dataset.shuffle(seed=seed)
+    dataset = dataset.select(range(min(n_samples, len(dataset))))
 
-    print(f"{dataset[5]['conversations']=}")
-    print(f"{dataset[5]['text']=}")
+    all_formatted_texts = []
+    for conversation in dataset["conversations"]:
+        for _ in range(n_augmentations):
+            all_formatted_texts.append(augment_conversation(conversation))
 
-    return dataset
+    final_dataset = Dataset.from_list(all_formatted_texts)
+
+    print(f"Original sample conversation: {dataset[0]['conversations']}")
+    print(f"Augmented example, v1: {final_dataset[0]['text']}")
+    print(f"Augmented example, v2: {final_dataset[1]['text']}")
+
+    return final_dataset
 
 
 @dataclass
@@ -85,7 +85,8 @@ class LoraArguments:
 
 
 def run_finetuning(name: str, lora_arguments: LoraArguments, training_arguments: TrainingArguments, seed: int,
-                   max_seq_length: int, dtype: torch.dtype, load_in_4bit: bool, device: str, output_dir: str):
+                   max_seq_length: int, dtype: torch.dtype, load_in_4bit: bool, device: str, output_dir: str,
+                   n_original_samples: int, n_augmentations: int):
     model, tokenizer = load_model(name, max_seq_length, dtype, load_in_4bit, device)
 
     model = FastLanguageModel.get_peft_model(
@@ -102,7 +103,7 @@ def run_finetuning(name: str, lora_arguments: LoraArguments, training_arguments:
         loftq_config=None, # And LoftQ
     )
 
-    dataset = get_hermes_dataset()
+    dataset = get_hermes_dataset(n_original_samples, n_augmentations)
 
     trainer = SFTTrainer(
         model=model,
@@ -184,6 +185,8 @@ def make_parser():
     parser.add_argument("--max-seq-length", type=int, default=2048)
     parser.add_argument("--load-in-4bit", action="store_true")
     parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--n-original-samples", type=int, default=8000)
+    parser.add_argument("--n-augmentations", type=int, default=4)
 
     # LoRA arguments
     parser.add_argument("--lora-rank", type=int, default=16)
@@ -192,16 +195,15 @@ def make_parser():
     parser.add_argument("--use-rslora", action="store_true")
 
     # Training arguments
-    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--grad-accum-steps", type=int, default=4)
     parser.add_argument("--warmup-steps", type=int, default=5)
-    # parser.add_argument("--num-epochs", type=int, default=1)
-    parser.add_argument("--max-steps", type=int, default=1000)
     parser.add_argument("--num-epochs", type=int, default=1)
+    parser.add_argument("--max-steps", type=int, default=1000)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
     parser.add_argument("--logging-steps", type=int, default=10)
     parser.add_argument("--weight-decay", type=float, default=0.01)
-    parser.add_argument("--output-dir", type=str, required=True)
+    parser.add_argument("-o", "--output-dir", type=str, required=True)
 
     return parser
 
@@ -227,8 +229,8 @@ if __name__ == "__main__":
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum_steps,
         warmup_steps=args.warmup_steps,
-        # num_train_epochs=args.num_epochs,
-        max_steps=args.max_steps,
+        num_train_epochs=args.num_epochs,
+        # max_steps=args.max_steps,
         learning_rate=args.learning_rate,
         fp16=not is_bfloat16_supported(),
         bf16=is_bfloat16_supported(),
@@ -244,6 +246,7 @@ if __name__ == "__main__":
     )
 
     model, tokenizer = run_finetuning(args.model_name, lora_arguments, training_arguments, args.seed,
-                                      args.max_seq_length, dtype, args.load_in_4bit, args.device, args.output_dir)
+                                      args.max_seq_length, dtype, args.load_in_4bit, args.device, args.output_dir,
+                                      args.n_original_samples, args.n_augmentations)
 
     sample_inference(model, tokenizer)
