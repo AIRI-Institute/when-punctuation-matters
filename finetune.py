@@ -1,5 +1,7 @@
+import ast
 import torch
 import random
+import pandas as pd
 from argparse import ArgumentParser
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -27,7 +29,7 @@ def load_model(name, max_seq_length, dtype, load_in_4bit, device):
     return model, tokenizer
 
 
-def get_hermes_dataset(n_samples: int = 8000, n_augmentations: int = 4):
+def get_hermes_dataset(dataset_name: str, n_samples: int = 8000, n_augmentations: int = 4):
     seed = 23
     random.seed(seed)
     verbalizer_first_options = ["question", "query", "Q"]
@@ -53,10 +55,14 @@ def get_hermes_dataset(n_samples: int = 8000, n_augmentations: int = 4):
         
         return {"text": text}
 
-    dataset_name = "teknium/OpenHermes-2.5"
-    dataset = load_dataset(dataset_name, split="train")
-    dataset = dataset.shuffle(seed=seed)
-    dataset = dataset.select(range(min(n_samples, len(dataset))))
+    print(dataset_name)
+    if dataset_name.endswith(".csv"):
+        dataset = pd.read_csv(dataset_name)
+        dataset["conversations"] = dataset["conversations"].map(ast.literal_eval)
+    else:
+        dataset = load_dataset(dataset_name, split="train")
+        dataset = dataset.shuffle(seed=seed)
+        dataset = dataset.select(range(min(n_samples, len(dataset))))
 
     all_formatted_texts = []
     for conversation in dataset["conversations"]:
@@ -65,7 +71,7 @@ def get_hermes_dataset(n_samples: int = 8000, n_augmentations: int = 4):
 
     final_dataset = Dataset.from_list(all_formatted_texts)
 
-    print(f"Original sample conversation: {dataset[0]['conversations']}")
+    print(f"Original sample conversation: {dataset['conversations'][0]}")
     print(f"Augmented example, v1: {final_dataset[0]['text']}")
     print(f"Augmented example, v2: {final_dataset[1]['text']}")
 
@@ -84,10 +90,10 @@ class LoraArguments:
     use_rslora: bool = False
 
 
-def run_finetuning(name: str, lora_arguments: LoraArguments, training_arguments: TrainingArguments, seed: int,
-                   max_seq_length: int, dtype: torch.dtype, load_in_4bit: bool, device: str, output_dir: str,
+def run_finetuning(model_name: str, dataset_name: str, lora_arguments: LoraArguments, training_arguments: TrainingArguments,
+                   seed: int, max_seq_length: int, dtype: torch.dtype, load_in_4bit: bool, device: str, output_dir: str,
                    n_original_samples: int, n_augmentations: int):
-    model, tokenizer = load_model(name, max_seq_length, dtype, load_in_4bit, device)
+    model, tokenizer = load_model(model_name, max_seq_length, dtype, load_in_4bit, device)
 
     model = FastLanguageModel.get_peft_model(
         model,
@@ -103,7 +109,7 @@ def run_finetuning(name: str, lora_arguments: LoraArguments, training_arguments:
         loftq_config=None, # And LoftQ
     )
 
-    dataset = get_hermes_dataset(n_original_samples, n_augmentations)
+    dataset = get_hermes_dataset(dataset_name, n_original_samples, n_augmentations)
 
     trainer = SFTTrainer(
         model=model,
@@ -111,22 +117,11 @@ def run_finetuning(name: str, lora_arguments: LoraArguments, training_arguments:
         train_dataset=dataset,
         dataset_text_field="text",
         max_seq_length=max_seq_length,
-        # data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer),
         data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
         dataset_num_proc=2,
         packing=False, # Can make training 5x faster for short sequences.
         args=training_arguments
     )
-
-    # trainer = train_on_responses_only(
-    #     trainer,
-    #     instruction_part="<|start_header_id|>user<|end_header_id|>\n\n",
-    #     response_part="<|start_header_id|>assistant<|end_header_id|>\n\n",
-    # )
-
-    # print(f"{tokenizer.decode(trainer.train_dataset[5]['input_ids'])=}")
-    # space = tokenizer(" ", add_special_tokens = False).input_ids[0]
-    # print(f"{tokenizer.decode([space if x == -100 else x for x in trainer.train_dataset[5]['labels']])=}")
 
     #Show current memory stats
     gpu_stats = torch.cuda.get_device_properties(0)
@@ -141,7 +136,7 @@ def run_finetuning(name: str, lora_arguments: LoraArguments, training_arguments:
     show_training_stats(trainer_stats, start_gpu_memory, max_memory)
 
     # Save model
-    model_name = name.split("/")[-1]
+    model_name = model_name.split("/")[-1]
     save_path = f"{output_dir}/{model_name}_lora"
     model.save_pretrained(save_path)
     tokenizer.save_pretrained(save_path)
@@ -180,13 +175,14 @@ def sample_inference(model, tokenizer):
 
 def make_parser():
     parser = ArgumentParser()
-    parser.add_argument("--model-name", type=str, default="unsloth/Llama-3.2-1B-Instruct")
+    parser.add_argument("-m", "--model-name", type=str, default="unsloth/Llama-3.2-1B-Instruct")
     parser.add_argument("--seed", type=int, default=3023)
     parser.add_argument("--max-seq-length", type=int, default=2048)
     parser.add_argument("--load-in-4bit", action="store_true")
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--n-original-samples", type=int, default=8000)
     parser.add_argument("--n-augmentations", type=int, default=4)
+    parser.add_argument("-d", "--dataset-name", default="teknium/OpenHermes-2.5")
 
     # LoRA arguments
     parser.add_argument("--lora-rank", type=int, default=16)
@@ -195,7 +191,7 @@ def make_parser():
     parser.add_argument("--use-rslora", action="store_true")
 
     # Training arguments
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("-b", "--batch-size", type=int, default=8)
     parser.add_argument("--grad-accum-steps", type=int, default=4)
     parser.add_argument("--warmup-steps", type=int, default=5)
     parser.add_argument("--num-epochs", type=int, default=1)
@@ -211,6 +207,7 @@ def make_parser():
 if __name__ == "__main__":
     parser = make_parser()
     args = parser.parse_args()
+    print(args)
 
     dtype = torch.bfloat16
 
@@ -242,10 +239,10 @@ if __name__ == "__main__":
         output_dir=args.output_dir,
         report_to="none", # Use this for WandB etc
         save_total_limit=3,
-        save_steps=500,
+        save_steps=100,
     )
 
-    model, tokenizer = run_finetuning(args.model_name, lora_arguments, training_arguments, args.seed,
+    model, tokenizer = run_finetuning(args.model_name, args.dataset_name, lora_arguments, training_arguments, args.seed,
                                       args.max_seq_length, dtype, args.load_in_4bit, args.device, args.output_dir,
                                       args.n_original_samples, args.n_augmentations)
 
