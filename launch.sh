@@ -7,6 +7,7 @@ exp_name=$( echo $model | rev | cut -d / -f1 | rev )
 exp_name="${exp_name}${suffix}"
 
 num_formats_to_analyze=9
+n_shot=0
 
 export CUDA_HOME=/usr/local/cuda-12.4
 export PATH=$CUDA_HOME/bin:$PATH
@@ -35,7 +36,7 @@ do
             --batch_size_llm ${batch_size_llm} \
             --num_samples 1000 \
             --model_name ${model} \
-            --n_shot 5 \
+            --n_shot ${n_shot} \
             --num_ensembles 4 \
             --ensemble_size 5 \
             --apply_batch_calibration 0 \
