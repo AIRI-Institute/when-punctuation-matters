@@ -1,6 +1,7 @@
-devices=$1
-model=$2
-suffix=$3
+devices=$1              # e.g. "0"
+model=$2                # e.g. "unsloth/Llama-3.2-1B-Instruct"
+format_split_mode=$3    # e.g. "random"
+suffix=$4               # e.g. "---no-chat-template"
 
 # Splits by `/` and takes last part (which is model's name)
 exp_name=$( echo $model | rev | cut -d / -f1 | rev )
@@ -44,6 +45,6 @@ do
             --evaluation_type full \
             --cache_dir /home/seleznev/.cache/huggingface \
             --output_dir exp/${exp_name} \
-            --nodes_to_evaluate_filepath train_test_splits/compositional_separator_space/holistic_random_sample_${task}_nodes_${num_formats_to_analyze}_textdisabled.json
+            --nodes_to_evaluate_filepath train_test_splits/${format_split_mode}/holistic_random_sample_${task}_nodes_${num_formats_to_analyze}_textdisabled.json
     done
 done
