@@ -16,7 +16,7 @@ n_shot=0
 apply_batch_calibration=0
 
 if [[ ${format_split_mode} == "random" ]]; then
-    path_to_test_formats=train_test_splits/random/holistic_random_sample_task050_nodes_10_textdisabled.json
+    path_to_test_formats=train_test_splits/random/holistic_random_sample_task050_nodes_${num_formats_to_analyze}_textdisabled.json
 else
     path_to_test_formats=""
 fi
