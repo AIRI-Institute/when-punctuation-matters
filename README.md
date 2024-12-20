@@ -5,7 +5,7 @@ Method: finetuning on instruction following dataset with prompt format augmentat
 ## Setup
 
 ```
-mamba create -n aa python=3.11 pytorch torchvision torchaudio pytorch-cuda=12.4 accelerate aiohttp click datasets einops numpy matplotlib openai pandas peft protobuf safetensors scikit-learn scipy seaborn sentence-transformers sentencepiece statsmodels sympy tqdm transformers wandb xgboost  -c pytorch -c nvidia -y
+mamba create -n aa python=3.11 pytorch torchvision torchaudio pytorch-cuda=12.4 accelerate aiohttp click datasets einops numpy matplotlib openai pandas peft=0.14.0 protobuf safetensors scikit-learn scipy seaborn sentence-transformers sentencepiece statsmodels sympy tqdm transformers wandb xgboost  -c pytorch -c nvidia -y
 
 pip install trl==0.12.1 unsloth==2024.11.7 xformers==0.0.28.post3 bitsandbytes==0.44.1 wandb==0.18.7
 mamba install -n aa ipykernel --update-deps --force-reinstall
