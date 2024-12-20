@@ -3,6 +3,7 @@ import json
 import copy
 import random
 import itertools
+from typing import List, Dict
 
 from main import (
     _load_task,
@@ -184,19 +185,19 @@ def save_json(data, filename: str):
         json.dump(data, f, indent=2)
 
 
-if __name__ == "__main__":
-    parser = make_parser()
-    parser.add_argument("--n-train", type=int)
-    parser.add_argument("--n-val", type=int)
-    parser.add_argument("--n-test", type=int)
-    parser.add_argument("--mode")
-    parser.add_argument("--seed", type=int)
-
-    args = parser.parse_args()
-    args.disable_text_action_type = True
-    args.allow_text_action_type = not args.disable_text_action_type
-    disable_text_action_type = 'textdisabled'
+def process_task(args, reference_action_type2test_elements: Dict[str, List[str]] | None):
+    """ Generates and saves a json file with test prompt formats, dataset examples order and some metadata (action_types).
+    Inputs:
+        args:
+            Mostly defined in main.py, with several arguments added below
+        reference_action_type2test_elements:
+            A mapping from action type (e.g. 'chose_space') to a list of possible options (e.g. [' ', '\n', '\t']).
+            Used to ensure consistent test formats across all tasks.
+    Outputs:
+        A dict with train, validation, test prompt formats, dataset examples order and some metadata (action_types).
+    """
     task_filename_to_print = _get_task_filename_to_print(args)
+    disable_text_action_type = 'textdisabled'
     metadata_filename = "metadata.txt"
 
     random.seed(args.seed)
@@ -206,31 +207,35 @@ if __name__ == "__main__":
     filepath = os.path.join(args.output_dir, 
                             f'holistic_random_sample_{task_filename_to_print}_nodes_{args.num_formats_to_analyze}_{disable_text_action_type}.json')
 
-    # random split
     if args.mode == "random":
         args.num_formats_to_analyze = args.n_train + args.n_val + args.n_test
-        valid_value_assignments, dataset_ordered_ids, pointer_action_pairs = _sample_value_assignments(args, VANILLA_MAPPING_ALL_CATEGORIES)
+        value_assignments, dataset_ordered_ids, pointer_action_pairs = _sample_value_assignments(args, VANILLA_MAPPING_ALL_CATEGORIES)
+        test = value_assignments[args.n_train + args.n_val:]
 
-        train = valid_value_assignments[:args.n_train]
-        val = valid_value_assignments[args.n_train:args.n_train + args.n_val]
-        test = valid_value_assignments[args.n_train + args.n_val:args.n_train + args.n_val + args.n_test]
+        # If we have reference values for test formats, patch test
+        if reference_action_type2test_elements:
+            action_types = [action_type for _, _, action_type in pointer_action_pairs]
+
+            test = []
+            for index in range(args.n_test):
+                format = [reference_action_type2test_elements[action][index] for action in action_types]
+                test.append(format)
+
+        # Train will be defined implicitely, as a complement to test
+        train = []
     elif args.mode == "space":
         args.num_formats_to_analyze = args.n_train
         train, dataset_ordered_ids, pointer_action_pairs = _sample_value_assignments(args, SHORT_TRAIN_MAPPING_space)
         args.num_formats_to_analyze = args.n_test
         test, _, _ = _sample_value_assignments(args, LONG_TEST_MAPPING_space)
 
-        val = []
     elif args.mode == "separator_space":
         args.num_formats_to_analyze = args.n_train
         train, dataset_ordered_ids, pointer_action_pairs = _sample_value_assignments(args, SHORT_TRAIN_MAPPING_space_separator)
         args.num_formats_to_analyze = args.n_test
         test, _, _ = _sample_value_assignments(args, LONG_TEST_MAPPING_space_separator)
 
-        val = []
     elif args.mode == "compositional_separator":
-        # train_seps = [e for e in CHOSEN_SEPARATOR_LIST if len(e[0]) <= 1]
-        # test_seps = [e for e in CHOSEN_SEPARATOR_LIST if len(e[0]) > 1]
         train_seps = [(e, e) for e in COMPOSITIONAL_TRAIN_SEPARATOR_LIST]
         test_seps = [(e, e) for e in COMPOSITIONAL_TEST_SEPARATOR_LIST]
 
@@ -239,17 +244,12 @@ if __name__ == "__main__":
 
         args.num_formats = args.n_test
         test, _, _ = _sample_value_assignments(args, VANILLA_MAPPING_ALL_CATEGORIES | {"chosen_separator": test_seps})
-        val = []
 
         with open(f"{args.output_dir}/{metadata_filename}", "w") as f:
             print("Train separators:", [e[0] for e in train_seps], file=f)
             print("Test separators:", [e[0] for e in test_seps], file=f)
 
     elif args.mode == "compositional_separator_space":
-        # train_seps = [e for e in CHOSEN_SEPARATOR_LIST if len(e[0]) <= 1]
-        # test_seps = [e for e in CHOSEN_SEPARATOR_LIST if len(e[0]) > 1]
-        # train_spaces = [e for e in CHOSEN_SPACE_LIST if len(e[0]) <= 1]
-        # test_spaces = [e for e in CHOSEN_SPACE_LIST if len(e[0]) > 1]
         train_seps = [(e, e) for e in COMPOSITIONAL_TRAIN_SEPARATOR_LIST]
         test_seps = [(e, e) for e in COMPOSITIONAL_TEST_SEPARATOR_LIST]
         train_spaces = [(e, e) for e in COMPOSITIONAL_TRAIN_SPACE_LIST]
@@ -260,7 +260,6 @@ if __name__ == "__main__":
 
         args.num_formats = args.n_test
         test, _, _ = _sample_value_assignments(args, VANILLA_MAPPING_ALL_CATEGORIES | {"chosen_separator": test_seps, "chosen_space": test_spaces})
-        val = []
 
         with open(f"{args.output_dir}/{metadata_filename}", "w") as f:
             print("Train separators:", [e[0] for e in train_seps], file=f)
@@ -276,7 +275,6 @@ if __name__ == "__main__":
 
         args.num_formats = args.n_test
         test, _, _ = _sample_value_assignments(args, VANILLA_MAPPING_ALL_CATEGORIES | {"chosen_space": test_spaces})
-        val = []
 
         with open(f"{args.output_dir}/{metadata_filename}", "w") as f:
             print("Train spaces:", [e[0] for e in train_spaces], file=f)
@@ -286,10 +284,69 @@ if __name__ == "__main__":
 
     data = {
         "train_formats": train,
-        "val_formats": val,
+        "val_formats": [],
         "test_formats": test,
         "action_types": [action_type for _, _, action_type in pointer_action_pairs],
         "dataset_ordered_ids": dataset_ordered_ids,
     }
 
     save_json(data, filepath)
+
+    return data
+
+
+TASK_NAMES = ["task050", "task065", "task069", "task070", "task114", "task133", "task155", "task158", "task161", "task162", "task163", "task190", "task213", "task214", "task220", "task279", "task280", "task286", "task296", "task297", "task316", "task317", "task319", "task320", "task322", "task323", "task325", "task326", "task327", "task328", "task335", "task337", "task385", "task580", "task607", "task608", "task609", "task904", "task905", "task1186", "task1283", "task1284", "task1297", "task1347", "task1387", "task1419", "task1420", "task1421", "task1423", "task1502", "task1612", "task1678", "task1724"]
+
+if __name__ == "__main__":
+    parser = make_parser()
+    parser.add_argument("--n-train", type=int)
+    parser.add_argument("--n-val", type=int)
+    parser.add_argument("--n-test", type=int)
+    parser.add_argument("--mode")
+    parser.add_argument("--seed", type=int)
+
+    args = parser.parse_args()
+    args.disable_text_action_type = True
+    args.allow_text_action_type = not args.disable_text_action_type
+
+    # For "random" mode, we need to unify the test formats across all tasks.
+    # So we sample concrete formats for task070 (which has all possible prompt components)
+    # and then use the same formats for other tasks (dropping non-applicable elements if needed,
+    # e.g. discarding components related to option formatting).
+    # NOTE: due to implementation details, test formats obtained for task 070 with `reference_action_type2test_elements`=None
+    # are different from test formats for task 070 with non-None `reference_action_type2test_elements`.
+    args.task_filename = "task070_"
+    task070_data = process_task(args, reference_action_type2test_elements=None)
+
+    reference_action_type2test_elements = {}
+    for action_type in task070_data["action_types"]:
+        reference_action_type2test_elements[action_type] = []
+
+    for format in task070_data["test_formats"]:
+        for element, action_type in zip(format, task070_data["action_types"]):
+            reference_action_type2test_elements[action_type].append(element)
+
+    """
+    Task 70 has following action types:
+       ['chosen_space',
+        'chosen_item_wrapper',
+        'chosen_number_format',
+        'chosen_space',
+        'chosen_separator',
+        'chosen_separator_text_and_option',
+        'text_descriptor_fn',
+        'chosen_separator']
+    'chosen_space' and 'chosen_separator' are mentioned twice, and the code above appends elements 
+    from both instances of e.g. 'chosen_space' in one list, resulting in more than 'args.n_test' options.
+    So we need to truncate them.
+    """
+    reference_action_type2test_elements = {
+        key: value[:args.n_test] for key, value in reference_action_type2test_elements.items()
+    }
+
+    assert all(len(element_options) == args.n_test for element_options in reference_action_type2test_elements.values())
+
+    # Generate formats
+    for task_name in TASK_NAMES:
+        args.task_filename = task_name + "_"
+        process_task(args, reference_action_type2test_elements)
