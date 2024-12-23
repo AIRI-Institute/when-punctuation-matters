@@ -39,21 +39,24 @@ echo "parsed experiment name:" $exp_name
 
 ### Training ###
 
-expected_checkpoint_location=training/${finetune_output_dir}/${model_name}
+expected_checkpoint_location=training/${finetune_output_dir}/${model_name}_lora
 
 for retry in $(seq 1 48)
 do
+    # If finetune was successful, there will be a directory for the checkpoint:
+    if [ -d ${expected_checkpoint_location} ]; then
+        echo "================================"
+        echo "Finished finetuning"
+        echo "================================"
+        break
+    fi
+
     CUDA_VISIBLE_DEVICES=$devices python finetune.py \
         --model-name ${full_huggingface_model_name} \
         --dataset-name ${dataset} \
         --output-dir training/${finetune_output_dir} \
         --format-split-mode ${format_split_mode} \
         --path-to-test-formats ${path_to_test_formats}
-    
-    # If finetune was successful, there will be a directory for the checkpoint:
-    if [ -d ${expected_checkpoint_location} ]; then
-        break
-    fi
 
     # Otherwise, retry finetuning after 30 minute pause
     echo "Failed retry ${retry}"
