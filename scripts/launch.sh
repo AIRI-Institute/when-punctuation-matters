@@ -9,6 +9,7 @@ exp_name="${exp_name}${suffix}"
 
 num_formats_to_analyze=9
 n_shot=0
+apply_batch_calibration=0
 
 export CUDA_HOME=/usr/local/cuda-12.4
 export PATH=$CUDA_HOME/bin:$PATH
@@ -40,7 +41,7 @@ do
             --n_shot ${n_shot} \
             --num_ensembles 4 \
             --ensemble_size 5 \
-            --apply_batch_calibration 0 \
+            --apply_batch_calibration ${apply_batch_calibration} \
             --evaluation_metric probability_ranking \
             --evaluation_type full \
             --cache_dir /home/seleznev/.cache/huggingface \
