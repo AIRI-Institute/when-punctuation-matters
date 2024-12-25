@@ -25,7 +25,7 @@ then
     echo "DISABLE_CHAT_TEMPLATE = 1 => FORCED NO CHAT TEMPLATE FOR ALL MODELS"
 fi
 
-if [[ apply_batch_calibration == "1" ]]
+if [[ ${apply_batch_calibration} == "1" ]]
 then
     echo "APPLYING BATCH CALIBRATION"
 fi
