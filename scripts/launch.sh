@@ -1,15 +1,15 @@
-devices=$1                      # e.g. "0"
-full_huggingface_model_name=$2  # e.g. "unsloth/Llama-3.2-1B-Instruct"
-n_shot=$3                       # e.g. "2"
-format_split_mode=$4            # e.g. "random"
-suffix=$5                       # e.g. "---no-chat-template"
-apply_batch_calibration=$6      # "1" to turn on, "0" to turn off
+devices=$1                              # e.g. "0"
+full_huggingface_model_name_or_path=$2  # e.g. "unsloth/Llama-3.2-1B-Instruct"
+n_shot=$3                               # e.g. "2"
+format_split_mode=$4                    # e.g. "random"
+suffix=$5                               # e.g. "---no-chat-template"
+apply_batch_calibration=$6              # "1" to turn on, "0" to turn off
 
 # Splits by `/` and takes last part (which is model's name)
-exp_name=$( echo $full_huggingface_model_name | rev | cut -d / -f1 | rev )
-exp_name=${exp_name}${suffix}-${n_shot}-shot
+model=$( echo $full_huggingface_model_name_or_path | rev | cut -d / -f1 | rev )
+exp_name=${model}${suffix}-${n_shot}-shot
 
-num_formats_to_analyze=9
+num_formats_to_analyze=10
 
 export CUDA_HOME=/usr/local/cuda-12.4
 export PATH=$CUDA_HOME/bin:$PATH
@@ -25,6 +25,11 @@ then
     echo "DISABLE_CHAT_TEMPLATE = 1 => FORCED NO CHAT TEMPLATE FOR ALL MODELS"
 fi
 
+if [[ apply_batch_calibration == "1" ]]
+then
+    echo "APPLYING BATCH CALIBRATION"
+fi
+
 # A hack to speed up experiments: everything is first launched with large batch, some runs fall with OOM, but get re-launched in next iteration.
 # Results for finished tasks are not re-computed.
 for batch_size_llm in 64 32 16 8
@@ -37,7 +42,7 @@ do
             --num_formats_to_analyze ${num_formats_to_analyze} \
             --batch_size_llm ${batch_size_llm} \
             --num_samples 1000 \
-            --model_name ${full_huggingface_model_name} \
+            --model_name ${full_huggingface_model_name_or_path} \
             --n_shot ${n_shot} \
             --num_ensembles 4 \
             --ensemble_size 5 \
