@@ -11,7 +11,7 @@ dataset="data/df_hermes_simple_answers.csv"
 # Splits by `/` and takes last part (which is model's name)
 model_name=$( echo ${full_huggingface_model_name} | rev | cut -d / -f1 | rev )
 finetuned_model_name=${model_name}_lora
-exp_name=${finetuned_model_name}${suffix}
+exp_name=${finetuned_model_name}${suffix}-${n_shot}-shot
 
 num_formats_to_analyze=9
 apply_batch_calibration=0

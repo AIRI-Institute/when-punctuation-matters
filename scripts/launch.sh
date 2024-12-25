@@ -7,7 +7,7 @@ apply_batch_calibration=$6      # "1" to turn on, "0" to turn off
 
 # Splits by `/` and takes last part (which is model's name)
 exp_name=$( echo $full_huggingface_model_name | rev | cut -d / -f1 | rev )
-exp_name="${exp_name}${suffix}"
+exp_name=${exp_name}${suffix}-${n_shot}-shot
 
 num_formats_to_analyze=9
 
