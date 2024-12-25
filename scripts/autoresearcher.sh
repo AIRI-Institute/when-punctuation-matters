@@ -1,9 +1,10 @@
 ### Input parameters ###
 devices=$1                      # e.g. "0"
 full_huggingface_model_name=$2  # e.g. "unsloth/Llama-3.2-3B-Instruct"
-format_split_mode=$3            # e.g. "random"
-finetune_output_dir=$4          # e.g. "llama1b_iid"
+n_shot=$3                       # e.g. "2"
+format_split_mode=$4            # e.g. "random"
 suffix=$5                       # e.g. "---iid-no-chat-template"
+finetune_output_dir=$6          # e.g. "llama1b_iid"
 
 ### Setting some variables ###
 dataset="data/df_hermes_simple_answers.csv"
@@ -13,7 +14,6 @@ finetuned_model_name=${model_name}_lora
 exp_name=${finetuned_model_name}${suffix}
 
 num_formats_to_analyze=9
-n_shot=0
 apply_batch_calibration=0
 
 if [[ ${format_split_mode} == "random" ]]; then
