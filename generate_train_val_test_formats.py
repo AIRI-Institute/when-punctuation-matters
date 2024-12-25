@@ -185,7 +185,7 @@ def save_json(data, filename: str):
         json.dump(data, f, indent=2)
 
 
-def process_task(args, original_n_nodes: int, reference_action_type2test_elements: Dict[str, List[str]] | None) -> Dict:
+def process_task(args, reference_action_type2test_elements: Dict[str, List[str]] | None) -> Dict:
     """ Generates and saves a json file with test prompt formats, dataset examples order and some metadata (action_types).
     Inputs:
         args:
@@ -205,7 +205,7 @@ def process_task(args, original_n_nodes: int, reference_action_type2test_element
     print(f"Processing task {args.task_filename}")
 
     filepath = os.path.join(args.output_dir, 
-                            f'holistic_random_sample_{task_filename_to_print}_nodes_{original_n_nodes}_{disable_text_action_type}.json')
+                            f'holistic_random_sample_{task_filename_to_print}_nodes_{args.num_formats_to_analyze}_{disable_text_action_type}.json')
 
     if args.mode == "random":
         args.num_formats_to_analyze = args.n_train + args.n_val + args.n_test
@@ -308,7 +308,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     args.disable_text_action_type = True
     args.allow_text_action_type = not args.disable_text_action_type
-    original_n_nodes = args.num_formats_to_analyze
+    # original_n_nodes = args.num_formats_to_analyze
 
     # For "random" mode, we need to unify the test formats across all tasks.
     # So we sample concrete formats for task070 (which has all possible prompt components)
@@ -317,7 +317,7 @@ if __name__ == "__main__":
     # NOTE: due to implementation details, test formats obtained for task 070 with `reference_action_type2test_elements`=None
     # are different from test formats for task 070 with non-None `reference_action_type2test_elements`.
     args.task_filename = "task070_"
-    task070_data = process_task(args, original_n_nodes, reference_action_type2test_elements=None)
+    task070_data = process_task(args, reference_action_type2test_elements=None)
 
     reference_action_type2test_elements = {}
     for action_type in task070_data["action_types"]:
@@ -350,4 +350,4 @@ if __name__ == "__main__":
     # Generate formats
     for task_name in TASK_NAMES:
         args.task_filename = task_name + "_"
-        process_task(args, original_n_nodes, reference_action_type2test_elements)
+        process_task(args, reference_action_type2test_elements)
