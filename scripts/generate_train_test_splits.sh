@@ -27,7 +27,7 @@ do
     python generate_train_val_test_formats.py \
         --task_filename DUMMY_VALUE \
         --dataset_name natural-instructions \
-        --num_formats_to_analyze 9 \
+        --num_formats_to_analyze 10 \
         --cache_dir /home/seleznev/.cache/huggingface \
         --output_dir ${output_dir} \
         --n-train 0 \
