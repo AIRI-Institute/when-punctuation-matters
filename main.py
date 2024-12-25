@@ -380,9 +380,20 @@ def main():
     args.allow_text_action_type = not args.disable_text_action_type
     disable_text_action_type = 'textdisabled'
 
-    if os.path.exists(os.path.join(args.output_dir, f'{_get_output_filename(args, disable_text_action_type)}.json')):
-        print(f"Already run evaluations for {_get_output_filename(args, disable_text_action_type)}.json")
-        return
+    output_path = os.path.join(args.output_dir, f'{_get_output_filename(args, disable_text_action_type)}.json')
+
+    if os.path.exists(output_path):
+        with open(output_path, "r") as f:
+            results = json.load(f)
+            n_formats_evaluated = len(results["all_structured_prompt_formats_accuracies"])
+
+        if n_formats_evaluated == args.num_formats_to_analyze + 1:
+            print(f"Already run evaluations for {_get_output_filename(args, disable_text_action_type)}.json")
+            return
+        elif n_formats_evaluated > args.num_formats_to_analyze + 1:
+            raise ValueError(f"More formats evaluated than expected, task {args.task_filename}\n{args}")
+        else:
+            print(f"{n_formats_evaluated} / {args.num_formats_to_analyze + 1} formats evaluted, re-starting task {args.task_filename}")
     else:
         print(f"Starting task {args.task_filename}")
     os.makedirs(args.output_dir, exist_ok=True)
@@ -413,6 +424,7 @@ def main():
             print(f"Loading formats from {args.nodes_to_evaluate_filepath}")
             tmp = json.load(open(args.nodes_to_evaluate_filepath, 'r'))
             valid_value_assignments = tmp['valid_value_assignments'] if "valid_value_assignments" in tmp else tmp["test_formats"]
+            assert len(valid_value_assignments) == args.num_formats_to_analyze, f"{len(valid_value_assignments)=}, {args.num_format_to_analyze=}"
             dataset_ordered_ids = tmp['dataset_ordered_ids']
         elif os.path.exists(filepath):
             tmp = json.load(open(filepath, 'r'))
