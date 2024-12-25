@@ -1,14 +1,15 @@
-devices=$1              # e.g. "0"
-model=$2                # e.g. "unsloth/Llama-3.2-1B-Instruct"
-format_split_mode=$3    # e.g. "random"
-suffix=$4               # e.g. "---no-chat-template"
+devices=$1                      # e.g. "0"
+full_huggingface_model_name=$2  # e.g. "unsloth/Llama-3.2-1B-Instruct"
+n_shot=$3                       # e.g. "2"
+format_split_mode=$4            # e.g. "random"
+suffix=$5                       # e.g. "---no-chat-template"
+apply_batch_calibration=$6      # "1" to turn on, "0" to turn off
 
 # Splits by `/` and takes last part (which is model's name)
-exp_name=$( echo $model | rev | cut -d / -f1 | rev )
+exp_name=$( echo $full_huggingface_model_name | rev | cut -d / -f1 | rev )
 exp_name="${exp_name}${suffix}"
 
 num_formats_to_analyze=9
-n_shot=0
 
 export CUDA_HOME=/usr/local/cuda-12.4
 export PATH=$CUDA_HOME/bin:$PATH
@@ -36,11 +37,11 @@ do
             --num_formats_to_analyze ${num_formats_to_analyze} \
             --batch_size_llm ${batch_size_llm} \
             --num_samples 1000 \
-            --model_name ${model} \
+            --model_name ${full_huggingface_model_name} \
             --n_shot ${n_shot} \
             --num_ensembles 4 \
             --ensemble_size 5 \
-            --apply_batch_calibration 0 \
+            --apply_batch_calibration ${apply_batch_calibration} \
             --evaluation_metric probability_ranking \
             --evaluation_type full \
             --cache_dir /home/seleznev/.cache/huggingface \
