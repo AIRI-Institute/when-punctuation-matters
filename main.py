@@ -343,7 +343,7 @@ def make_parser():
     # params to set up evaluation settings
     parser.add_argument('--num_samples', type=int, default=1000, help='Maximum number of samples to evaluate for each format.')
     parser.add_argument('--evaluation_metric', choices=['exact_prefix_matching', 'probability_ranking'])
-    parser.add_argument('--evaluation_type', type=str, choices=['full', 'format_spread', 'ensembles'],
+    parser.add_argument('--evaluation_type', type=str, choices=['full', 'format_spread', 'ensembles', 'default'],
                         help='Determines how to evaluate the array of formats defined. '
                              'Options are full evaluation of each node, or use Thompson Sampling to quickly find the format spread.')
     parser.add_argument('--n_shot', type=int, default=1)
@@ -542,6 +542,20 @@ def main():
         acc = search_tree.list_node_accuracies()
         print('Best Node:', acc[0])
         print('Worst Node:', acc[-1])
+
+    elif args.evaluation_type == 'default':
+        search_tree = GeneticAlgorithmAmongPrompts(
+            structured_prompt_format,
+            global_constraints,
+            extra_params_structured_prompt_format,
+            args_compute_node_score=args_compute_node_score,
+            objective='lowest_accuracy',  # dummy in this mode
+            allow_text_action_type=args.allow_text_action_type,
+            original_multiple_choice_output_format=original_multiple_choice_output_format
+        )
+
+        acc = search_tree.list_node_accuracies()
+        print('Default Node:', acc[0])
 
     elif args.evaluation_type == 'ensembles':
         search_tree = TemplateEnsemblesAlgorithmAmongPrompts(
