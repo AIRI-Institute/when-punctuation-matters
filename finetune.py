@@ -7,12 +7,12 @@ from pathlib import Path
 from argparse import ArgumentParser
 from dataclasses import dataclass
 from typing import Optional, Tuple, Set, Dict, List
-from datasets import load_dataset
+from tqdm.auto import tqdm
+from datasets import load_dataset, Dataset
 from trl import SFTTrainer
 from unsloth import FastLanguageModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template, standardize_sharegpt, train_on_responses_only
 from transformers import TrainingArguments, DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
-from datasets import Dataset
 
 from generate_train_val_test_formats import VANILLA_MAPPING_ALL_CATEGORIES, COMPOSITIONAL_TRAIN_SEPARATOR_LIST, COMPOSITIONAL_TRAIN_SPACE_LIST, TASK_NAMES
 
@@ -112,8 +112,8 @@ def _compose_test_hashes_set(format_split_mode: str, path_to_test_formats: str) 
 def _build_natural_instruction_dataset(path_to_test_formats: str, start_idx: int) -> Dict[str, List[Dict[str, str]]]:
     instances = []
 
-    for taskname in TASK_NAMES:
-        task_path = Path("../natural-instructions/tasks").glob(f"{taskname}*.json")
+    for taskname in tqdm(TASK_NAMES, desc="tasks"):
+        task_path = list(Path("../natural-instructions/tasks").glob(f"{taskname}_*.json"))
         assert len(task_path) == 1, f"Found more than one file for {taskname},\n{task_path}"
         task_path = task_path[0]
 
@@ -130,15 +130,15 @@ def _build_natural_instruction_dataset(path_to_test_formats: str, start_idx: int
         instances.extend([task["Instances"][i] for i in train_ids])
     
     dataset = {"conversations": []}
-    for instance in instances:
+    for instance in tqdm(instances, "instances to conversations"):
         conversation = [
             {
                 "from": "human",
-                "content": instance["input"]
+                "value": instance["input"]
             },
             {
                 "from": "gpt",
-                "content": instance["output"][0]
+                "value": instance["output"][0]
             }
         ]
         dataset["conversations"].append(conversation)
