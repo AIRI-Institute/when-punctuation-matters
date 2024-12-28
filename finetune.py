@@ -3,9 +3,10 @@ import json
 import torch
 import random
 import pandas as pd
+from pathlib import Path
 from argparse import ArgumentParser
 from dataclasses import dataclass
-from typing import Optional, Tuple, Set, Dict
+from typing import Optional, Tuple, Set, Dict, List
 from datasets import load_dataset
 from trl import SFTTrainer
 from unsloth import FastLanguageModel, is_bfloat16_supported
@@ -13,7 +14,7 @@ from unsloth.chat_templates import get_chat_template, standardize_sharegpt, trai
 from transformers import TrainingArguments, DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
 from datasets import Dataset
 
-from generate_train_val_test_formats import VANILLA_MAPPING_ALL_CATEGORIES, COMPOSITIONAL_TRAIN_SEPARATOR_LIST, COMPOSITIONAL_TRAIN_SPACE_LIST
+from generate_train_val_test_formats import VANILLA_MAPPING_ALL_CATEGORIES, COMPOSITIONAL_TRAIN_SEPARATOR_LIST, COMPOSITIONAL_TRAIN_SPACE_LIST, TASK_NAMES
 
 
 def load_model(name: str, max_seq_length: int, dtype: type, load_in_4bit: bool, device: str):
@@ -26,6 +27,11 @@ def load_model(name: str, max_seq_length: int, dtype: type, load_in_4bit: bool, 
     model.to(device)
 
     return model, tokenizer
+
+
+def load_json(path):
+    with open(path, "r") as f:
+        return json.load(f)
 
 
 def _get_format_hash(space_str: str, separator_str: str, text_descriptor_fn_str: str) -> int:
@@ -84,8 +90,7 @@ def _compose_test_hashes_set(format_split_mode: str, path_to_test_formats: str) 
     Resulting set is used to efficiently check whether a random generated format matches with some test format.
     """
     if format_split_mode == "random":
-        with open(path_to_test_formats, "r") as f:
-            config = json.load(f)
+        config = load_json(path_to_test_formats)
         
         test_format_hashes = set()
         for format in config["test_formats"]:
@@ -104,7 +109,44 @@ def _compose_test_hashes_set(format_split_mode: str, path_to_test_formats: str) 
     return test_format_hashes
 
 
-def get_dataset(dataset_name: str, n_samples: int, n_augmentations: int, format_split_mode: str, path_to_test_formats: str) -> Dataset:
+def _build_natural_instruction_dataset(path_to_test_formats: str, start_idx: int) -> Dict[str, List[Dict[str, str]]]:
+    instances = []
+
+    for taskname in TASK_NAMES:
+        task_path = Path("../natural-instructions/tasks").glob(f"{taskname}*.json")
+        assert len(task_path) == 1, f"Found more than one file for {taskname},\n{task_path}"
+        task_path = task_path[0]
+
+        current_task_path = path_to_test_formats.replace("task050", taskname)
+        with open(current_task_path, "r") as f:
+            config = json.load(f)
+
+        # amount of demonstrations was originally hardcoded in data_loading.py, set_up_prompt_variation_exploration_without_extra_files function. Must be changed synchronously.
+        n_demonstrations = 10
+        max_train_size = 1000
+        train_ids = config["dataset_ordered_ids"][start_idx + n_demonstrations:start_idx + n_demonstrations + max_train_size]
+
+        task = load_json(task_path)
+        instances.extend([task["Instances"][i] for i in train_ids])
+    
+    dataset = {"conversations": []}
+    for instance in instances:
+        conversation = [
+            {
+                "from": "human",
+                "content": instance["input"]
+            },
+            {
+                "from": "gpt",
+                "content": instance["output"][0]
+            }
+        ]
+        dataset["conversations"].append(conversation)
+
+    return dataset
+
+
+def get_dataset(dataset_name: str, n_samples: int, n_augmentations: int, format_split_mode: str, path_to_test_formats: str, start_idx: int) -> Dataset:
     """Load a dataset.
     Args:
         dataset_name: path to .csv file or a huggingface dataset name.
@@ -112,6 +154,7 @@ def get_dataset(dataset_name: str, n_samples: int, n_augmentations: int, format_
         n_augmentations: for each example from (a subsample of) original dataset, `n_augmentation` versions of it with different formats will be added to the final dataset.
         format_split_mode: defines which augmentations can be applied -- we can only use formats from train split.
         path_to_test_formats: for format_split_mode = 'random', we need a path to a complete list test formats.
+        start_idx: if 'dataset_name' == "natural-instructions", we need to specify the starting index of training samples, since some samples are taken as test.
     Output:
         final_dataset: dataset with augmented versions of original samples.
     """
@@ -122,6 +165,9 @@ def get_dataset(dataset_name: str, n_samples: int, n_augmentations: int, format_
     if dataset_name.endswith(".csv"):
         dataset = pd.read_csv(dataset_name)
         dataset["conversations"] = dataset["conversations"].map(ast.literal_eval)
+    elif dataset_name == "natural-instructions":
+        dataset = _build_natural_instruction_dataset(path_to_test_formats, start_idx)
+        random.shuffle(dataset["conversations"])
     else:
         dataset = load_dataset(dataset_name, split="train")
         dataset = dataset.shuffle(seed=seed)
@@ -162,6 +208,7 @@ class DatasetArguments:
     n_augmentations: int
     format_split_mode: str
     path_to_test_formats: str
+    start_idx: int
 
 
 def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_arguments: TrainingArguments, dataset_arguments: DatasetArguments,
@@ -187,7 +234,8 @@ def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_argu
         dataset_arguments.n_original_samples,
         dataset_arguments.n_augmentations,
         dataset_arguments.format_split_mode,
-        dataset_arguments.path_to_test_formats
+        dataset_arguments.path_to_test_formats,
+        dataset_arguments.start_idx,
     )
 
     trainer = SFTTrainer(
@@ -266,6 +314,7 @@ def make_parser():
     parser.add_argument("-d", "--dataset-name", default="teknium/OpenHermes-2.5")
     parser.add_argument("--format-split-mode", required=True)
     parser.add_argument("--path-to-test-formats")
+    parser.add_argument("--start-idx", type=int, default=0)
 
     # LoRA arguments
     parser.add_argument("--lora-rank", type=int, default=16)
@@ -310,7 +359,8 @@ if __name__ == "__main__":
         n_original_samples=args.n_original_samples,
         n_augmentations=args.n_augmentations,
         format_split_mode=args.format_split_mode,
-        path_to_test_formats=args.path_to_test_formats
+        path_to_test_formats=args.path_to_test_formats,
+        start_idx=args.start_idx
     )
 
     training_arguments = TrainingArguments(

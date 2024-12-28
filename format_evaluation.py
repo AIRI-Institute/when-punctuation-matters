@@ -351,7 +351,8 @@ class GeneticAlgorithmAmongPrompts:
         json.dump(to_dump, open(filename, 'w'))
 
     def _compute_node_score_from_resolved_prompt(self, resolved_prompt, num_samples_to_test=-1):
-        last_id_analyzed = self.all_structured_prompt_formats_last_id_evaluated.get(resolved_prompt, 0)
+        # last_id_analyzed = self.all_structured_prompt_formats_last_id_evaluated.get(resolved_prompt, 0)
+        last_id_analyzed = 0
         interval_ids_to_test = (last_id_analyzed, last_id_analyzed + num_samples_to_test) \
             if num_samples_to_test != -1 and last_id_analyzed is not None \
             else (None, None)

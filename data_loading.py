@@ -96,6 +96,7 @@ def set_up_prompt_variation_exploration_without_extra_files(
     else:
         random.shuffle(raw_dataset)
 
+    # constant 10 is also now hardcoded in finetune.py, get_dataset function. Must be changed synchronously.
     demonstrations = raw_dataset[:10]
     dataset = [entry for entry in raw_dataset[10:]]
 
