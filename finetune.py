@@ -75,7 +75,8 @@ def augment_conversation(conversation, format_split_mode: str, test_format_hashe
         if format_split_mode != "random" or current_hash not in test_format_hashes:
             break
         else:
-            print(f"Regenerating format", [_space, _separator, _text_descriptor_fn_str])
+            pass
+            # print(f"Regenerating format", [_space, _separator, _text_descriptor_fn_str])
 
     _text_descriptor_first = _text_descriptor_fn(random.choice(verbalizer_first_options))
     _text_descriptor_second = _text_descriptor_fn(random.choice(verbalizer_second_options))
