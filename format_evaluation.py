@@ -369,7 +369,7 @@ class GeneticAlgorithmAmongPrompts:
             **self.args_compute_node_score,
             structured_prompt_format=structured_prompt_format,
             original_to_current_multiple_choice_classes=original_to_current_multiple_choice_classes,
-            interval_ids_to_test=interval_ids_to_test
+            interval_ids_to_test=interval_ids_to_test,
         )
         self.all_structured_prompt_formats_last_id_evaluated[resolved_prompt] = interval_ids_to_test[1]
         self.all_structured_prompt_formats_accuracies[resolved_prompt] = acc
@@ -383,7 +383,7 @@ class GeneticAlgorithmAmongPrompts:
             resolved_prompt=self._get_node_from_format(structured_prompt_format),
             num_samples_to_test=num_samples_to_test)
 
-    def evaluate_node(self, solution: List[int], num_samples_to_test):
+    def evaluate_node(self, value_assignment_id: List[int], num_samples_to_test):
 
         # copy structured_prompt_format to avoid modifying the original
         resolved_prompt = self._get_node_from_format(self.initial_structured_prompt_format)
@@ -397,7 +397,7 @@ class GeneticAlgorithmAmongPrompts:
         # transform action value ids into a new structured_prompt_format
         all_action_values = []
         all_action_value_names = []
-        for (element, element_id, action_type), action_value_id in zip(pointer_action_pairs, solution):
+        for (element, element_id, action_type), action_value_id in zip(pointer_action_pairs, value_assignment_id):
             action_value, action_value_name = MAPPING_ALL_CATEGORIES[action_type][int(action_value_id)]
             all_action_values.append(action_value)
             all_action_value_names.append(action_value_name)
@@ -439,8 +439,8 @@ class GeneticAlgorithmAmongPrompts:
         value_assignments_ids = value_assignment_str_to_indices(value_assignments, self.pointer_action_pairs)
 
         # run all nodes
-        for value_assignment in tqdm(value_assignments_ids, desc="nodes"):
-            self.evaluate_node(value_assignment, num_samples_to_test)
+        for value_assignment_id in tqdm(value_assignments_ids, desc="nodes"):
+            self.evaluate_node(value_assignment_id, num_samples_to_test)
 
 
 class ThompsonSamplingAlgorithmAmongPrompts(GeneticAlgorithmAmongPrompts):

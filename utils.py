@@ -193,13 +193,11 @@ def evaluate_prompt_format(
     Function that evaluates a prompt format (i.e. node) on a given set of samples (interval_ids_to_test).
     If interval_ids_to_test is not provided, it defaults to evaluating the whole dataset.
     """
-
     # 1. set up input prompts including demonstrations
     input_prompt_string_list, selected_dataset_ids = _setup_full_prompts_to_test_on(
         input_fields_list, regex_key_idx_list, selected_dataset_ids,
         demos_fields_list, demos_regex_key_idx_list, demonstrations_outputs, demonstration_definition,
         structured_prompt_format, original_to_current_multiple_choice_classes, interval_ids_to_test, args.n_shot)
-
     # 2. update the output values if needed, i.e. if the multiple choice classes now have different names
     assert all(len(dataset[idx]['output']) == 1 for idx in selected_dataset_ids)
     dataset_updated = copy.deepcopy(dataset)
@@ -215,6 +213,10 @@ def evaluate_prompt_format(
                 args, dataset_updated, selected_dataset_ids, model, tokenizer, input_prompt_string_list)
         else:
             return solve_with_rank_based_scoring_refactor(
+                args, dataset_updated, selected_dataset_ids, model, tokenizer, input_prompt_string_list)
+    
+    elif args.evaluation_metric == 'exact_match':
+        return solve_with_exact_match_scoring(
                 args, dataset_updated, selected_dataset_ids, model, tokenizer, input_prompt_string_list)
 
     elif args.evaluation_metric == 'exact_prefix_matching':
@@ -661,6 +663,81 @@ def solve_with_rank_based_scoring_refactor(args, dataset, selected_dataset_ids, 
             accuracy['total']), (accuracy, logs)
 ### REFACTOR ###
 
+
+@torch.inference_mode()
+def solve_with_exact_match_scoring(args, dataset, selected_dataset_ids, model, tokenizer, input_prompt_string_list):
+    output_classes = sorted(list(set([dataset[idx]['output'][0] for idx in selected_dataset_ids])))
+    assert len(output_classes) < 100
+    assert tokenizer is not None and model is not None
+
+    answer_lengths = [len(a) for a in tokenizer(output_classes, add_special_tokens=False)["input_ids"]]
+    max_answer_length = max(answer_lengths)
+
+    accuracy = {
+        'right': [],
+        'wrong': [],
+        'other': [],
+        'total': 0
+    }
+    logs = []
+
+    clean_text = lambda x: x.strip(' .,()\n-><').lower()
+
+    for batch_idx in tqdm(range(math.ceil(len(input_prompt_string_list) / args.batch_size_llm)), desc="batches"):
+        batch_start_idx = batch_idx * args.batch_size_llm
+        batch_end_idx = (batch_idx + 1) * args.batch_size_llm
+        prompts = input_prompt_string_list[batch_start_idx:batch_end_idx]
+        actual_batch_size = len(prompts)
+        inputs = _tokenize_prompts(prompts, tokenizer).to(model.device)
+
+        # inputs.input_ids has shape [batch_size, seq_len]
+        # print(f"{inputs['input_ids'].shape=}")
+
+        generation = model.generate(**inputs, max_new_tokens=max_answer_length, do_sample=False, top_p=None, temperature=None).detach()
+        output_texts = tokenizer.batch_decode(generation, skip_special_tokens=True)
+
+        answers = [output_texts[i][len(prompts[i]):] for i in range(len(output_texts))]
+
+        for idx in range(actual_batch_size):
+            clean_model_answer = clean_text(answers[idx])
+
+            expected_output = dataset[selected_dataset_ids[batch_start_idx + idx]]["output"][0]
+            wrong_answers = [e for e in output_classes if e != expected_output]
+
+            right_answer = clean_text(expected_output)
+            wrong_answers = [clean_text(e) for e in wrong_answers]
+
+            is_right = match_robust_to_multiple_choice(clean_model_answer, right_answer)
+            is_wrong = any(
+                match_robust_to_multiple_choice(clean_model_answer, wrong_answer) for wrong_answer in wrong_answers)
+
+            accuracy['right'].append(is_right)
+            accuracy['wrong'].append(is_wrong)
+            accuracy['other'].append(not is_wrong and not is_right)
+            # by construction chosen answer is always from output_classes, but this might be useful for free-form answers later
+            accuracy["total"] += 1
+
+            logs.append(
+                {
+                    'entry': dataset[selected_dataset_ids[batch_idx + idx]],
+                    'dataset_idx': idx,
+                    'generation': answers[idx],
+                    'answer': expected_output,
+                    'output_classes': output_classes,
+                    'full_prompt_string': input_prompt_string_list[batch_start_idx + idx],
+                    'eval_type': 'ranking',
+                    'scores': None,
+                }
+            )
+
+        del generation
+        torch.cuda.empty_cache()
+
+    return (sum(accuracy['right']) * 1.0 / max(accuracy['total'], 1),
+            sum(accuracy['wrong']) * 1.0 / max(accuracy['total'], 1),
+            accuracy['total']), (accuracy, logs)
+
+
 @torch.inference_mode()
 def solve_with_rank_based_scoring_ensembles(args, dataset, input_fields_list, regex_key_idx_list, selected_dataset_ids,
         demos_fields_list, demos_regex_key_idx_list, demonstrations_outputs, demonstration_definition,
@@ -768,7 +845,7 @@ def solve_with_rank_based_scoring_ensembles(args, dataset, input_fields_list, re
 
 
 def _tokenize_prompts(prompts: List[str], tokenizer) -> BatchEncoding:
-    if tokenizer.chat_template:
+    if not os.environ.get("DISABLE_CHAT_TEMPLATE") == "1" and tokenizer.chat_template:
         conversations = [[{"role": "user", "content": prompt}] for prompt in prompts]
 
         input_ids = tokenizer.apply_chat_template(
