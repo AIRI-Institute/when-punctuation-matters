@@ -693,13 +693,14 @@ def solve_with_exact_match_scoring(args, dataset, selected_dataset_ids, model, t
         # inputs.input_ids has shape [batch_size, seq_len]
         # print(f"{inputs['input_ids'].shape=}")
 
-        generation = model.generate(**inputs, max_new_tokens=max_answer_length, do_sample=False, top_p=None, temperature=None).detach()
-        output_texts = tokenizer.batch_decode(generation, skip_special_tokens=True)
+        generation = model.generate(**inputs, max_new_tokens=max_answer_length + 1, do_sample=False, top_p=None, temperature=None).detach()
 
-        answers = [output_texts[i][len(prompts[i]):] for i in range(len(output_texts))]
+        model_answers = tokenizer.batch_decode(generation[:, inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+
+        # answers = [output_texts[i][len(prompts[i]):] for i in range(len(output_texts))]
 
         for idx in range(actual_batch_size):
-            clean_model_answer = clean_text(answers[idx])
+            clean_model_answer = clean_text(model_answers[idx])
 
             expected_output = dataset[selected_dataset_ids[batch_start_idx + idx]]["output"][0]
             wrong_answers = [e for e in output_classes if e != expected_output]
@@ -721,7 +722,7 @@ def solve_with_exact_match_scoring(args, dataset, selected_dataset_ids, model, t
                 {
                     'entry': dataset[selected_dataset_ids[batch_idx + idx]],
                     'dataset_idx': idx,
-                    'generation': answers[idx],
+                    'generation': model_answers[idx],
                     'answer': expected_output,
                     'output_classes': output_classes,
                     'full_prompt_string': input_prompt_string_list[batch_start_idx + idx],
