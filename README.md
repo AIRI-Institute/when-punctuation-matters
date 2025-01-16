@@ -13,7 +13,7 @@ mamba install -n aa ipykernel --update-deps --force-reinstall
 
 # [Source README] FormatSpread _or: How I learned to start worrying about prompt formatting_
 
-![alt text](images/format_spread_figure_1_task280.png)
+![alt text](format_spread_figure_1_task280.png)
 
 Prerequisites: download [natural-instructions](https://github.com/allenai/natural-instructions) and [instruction-induction](https://github.com/orhonovich/instruction-induction).
 
