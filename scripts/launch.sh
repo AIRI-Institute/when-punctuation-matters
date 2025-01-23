@@ -2,7 +2,7 @@ devices=$1                              # e.g. "0"
 full_huggingface_model_name_or_path=$2  # e.g. "unsloth/Llama-3.2-1B-Instruct"
 n_shot=$3                               # e.g. "2"
 format_split_mode=$4                    # e.g. "random"
-suffix=$5                               # e.g. "---no-chat-template"
+suffix=$5                               # e.g. "---iidx2-no-chat-template"
 apply_batch_calibration=$6              # "1" to turn on, "0" to turn off
 
 # Splits by `/` and takes last part (which is model's name)
