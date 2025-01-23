@@ -8,10 +8,10 @@ from pathlib import Path
 from joblib import Parallel, delayed
 from typing import Dict, List
 from math import sqrt, ceil
-from statistics import median
+from statistics import median, stdev
 from argparse import ArgumentParser
 
-sns.set_theme()
+sns.set_theme(font="monospace")
 
 
 def read_json(path: str) -> Dict:
@@ -60,21 +60,23 @@ def _process_single_path(path: str) -> Dict:
             worst_n = n
 
     median_accuracy = median([acc_tuple[0] for acc_tuple in format_to_acc.values()])
+    accuracy_std = stdev([acc_tuple[0] for acc_tuple in format_to_acc.values()])
 
     # first format in dict is assumed to be the default format
     default_format = next(iter(format_to_acc))
     default_accuracy = format_to_acc[default_format][0]
-    drops = [default_accuracy - acc_tuple[0] for acc_tuple in format_to_acc.values()]
-    drops.pop(0) # remove first 0
+    changes = [default_accuracy - acc_tuple[0] for acc_tuple in format_to_acc.values()]
+    changes.pop(0) # remove first 0
 
     return {
         "task": _extract_name_from_path(str(path)),
         "spread": best_acc - worst_acc,
+        "std": accuracy_std,
         "best_accuracy": best_acc,
         "worst_accuracy": worst_acc,
         "median_accuracy": median_accuracy,
         "default_accuracy": default_accuracy,
-        "mean_drop": sum(drops) / len(drops),
+        "mean_drop": sum(changes) / len(changes) if len(changes) > 0 else 0,
         "best_format": best_format,
         "worst_format": worst_format,
         "best_n": best_n,
@@ -104,7 +106,7 @@ def parse_args():
     return args
 
 
-N_SELECTED_TASKS = 53
+N_SELECTED_TASKS = 52
 
 if __name__ == "__main__":
     args = parse_args()
@@ -122,11 +124,13 @@ if __name__ == "__main__":
         not "batch-calibration-probs" in name and 
         not "sensitivity-aware-deconding" in name and
         not "rank1" in name and
-        not "batch-calibration" in name and
-        not "default" in name
+        # not "batch-calibration" in name and
+        not "default" in name and
+        not "augs" in name and
+        not "exact-match" in name and
+        not "compositional" in name
         # not "1ksteps" in name and
         # not "superclear" in name and
-        # not "augs" in name and
         # not "iid" in name and
         # not "simpleanswers-batch-calibration" in name
     ]
@@ -134,9 +138,10 @@ if __name__ == "__main__":
     experiment_names = [name for name in experiment_names if ("2-shot" in name and "lora" not in name) or ("0-shot" in name and "lora" in name)]
     experiment_names = [name for name in experiment_names if "no-chat-template" in name]
     experiment_names = [name for name in experiment_names if ("instruct" in name.lower() or "it" in name)]
-    # experiment_names = [name for name in experiment_names if ("Llama-3.2" in name or "gemma-2-2b" in name or "Qwen2.5-3B" in name)]
-    experiment_names = [name for name in experiment_names if "Llama-3.2" in name or "Qwen2.5" in name or "gemma" in name]
-    experiment_names = [name for name in experiment_names if ("lora" not in name) or ("lora" in name and "iidx2" in name)]
+    # experiment_names = [name for name in experiment_names if "Llama-3.2-3B" in name]
+    experiment_names = [name for name in experiment_names if "Llama-3.2-3B" in name or "Qwen2.5-3B" in name or "gemma-2-2b" in name]
+    # experiment_names = [name for name in experiment_names if "Llama-3.1-8B" in name or "Qwen2.5-7B" in name or "gemma-2-9b" in name]
+    experiment_names = [name for name in experiment_names if ("lora" not in name) or ("lora" in name and "iid" in name)]
 
     for n in experiment_names:
         print("\t", n)
@@ -144,20 +149,19 @@ if __name__ == "__main__":
     for experiment_name in tqdm(experiment_names, desc="models"):
         subdir = Path(args.root_dir) / experiment_name
 
-        model_name = experiment_name.split("---")[0]
+        model_name, tail = experiment_name.split("---")
 
         num_nodes = 5 * (args.num_nodes + 1) - 1 if "ensemble" in experiment_name else args.num_nodes
-        pattern = f"metadataholistic*{model_name}*_numnodes_{num_nodes}*.json"
+        pattern = f"metadataholistic*{model_name}*.json"
         evaluated_tasks_result_paths = list(subdir.glob(pattern))
         if len(evaluated_tasks_result_paths) != N_SELECTED_TASKS:
+            print(f"{model_name=}")
             print(f"ATTENTION: {experiment_name} is only evaluated on {len(evaluated_tasks_result_paths)} tasks")
         df = collect_spreads(evaluated_tasks_result_paths)
 
-        df["experiment"] = experiment_name\
-            .replace("-no-chat-template-", "-")\
-            .replace("-iidx2-", "-")\
-            .replace("-iid-", "-")\
-            .replace("---", " " * 10)
+        tail = tail.replace("no-chat-template-", "")
+
+        df["experiment"] = f"{model_name:>30}{tail:>40}"
 
         if model_name.endswith("_lora"):
             model_name = model_name[:-len("_lora")]
@@ -177,57 +181,75 @@ if __name__ == "__main__":
         subset = total_df[total_df["model"] == model]
 
         plt.figure(figsize=(12, 8))
-        sns.barplot(data=subset, x="spread", y="experiment", errorbar=("pi", 90), color=model2color[model], legend=False)
-        plt.xlabel(f"Performance spread across prompt formats\n{N_SELECTED_TASKS} tasks from Natural Instructions")
+        # sns.barplot(data=subset, x="spread", y="experiment", errorbar=("pi", 90), color=model2color[model], legend=False)
+        sns.boxplot(data=subset, x="spread", y="experiment", color=model2color[model], legend=False)
+        plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
         plt.ylabel("")
-        plt.title("iid split")
-        plt.savefig(f"{args.image_dir}/barplot_{model}.png", dpi=350, bbox_inches="tight")
+        plt.title(f"Spread across prompt formats\niid split")
+        # plt.savefig(f"{args.image_dir}/barplot_{model}.png", dpi=350, bbox_inches="tight")
+        plt.savefig(f"{args.image_dir}/boxplot_{model}.png", dpi=350, bbox_inches="tight")
+        plt.close()
+
+        plt.figure(figsize=(12, 8))
+        sns.boxplot(data=subset, x="std", y="experiment", color=model2color[model], legend=False)
+        plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
+        plt.ylabel("")
+        plt.title(f"Standard deviation of accuracy across prompt formats\niid split")
+        plt.savefig(f"{args.image_dir}/std_boxplot_{model}.png", dpi=350, bbox_inches="tight")
         plt.close()
 
         plt.figure(figsize=(12, 8))
         sns.boxplot(data=subset, x="median_accuracy", y="experiment", color=model2color[model], legend=False)
-        plt.xlabel(f"Median accuracy across prompt formats\n{N_SELECTED_TASKS} tasks from Natural Instructions")
+        plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
         plt.ylabel("")
-        plt.title("iid split")
+        plt.title(f"Median accuracy across prompt formats\niid split")
         plt.savefig(f"{args.image_dir}/median_accuracy_boxplot_{model}.png", dpi=350, bbox_inches="tight")
         plt.close()
 
-        plt.figure(figsize=(12, 8))
-        sns.boxplot(data=subset, x="mean_drop", y="experiment", color=model2color[model], whis=(5, 95), legend=False)
-        plt.xlabel(f"Mean performance drop across prompt formats compared to default format\nWhiskers denote 5th and 95th percentiles\n{N_SELECTED_TASKS} tasks from Natural Instructions")
-        plt.ylabel("")
-        plt.title("iid split")
-        plt.savefig(f"{args.image_dir}/mean_drop_boxplot_{model}.png", dpi=350, bbox_inches="tight")
-        plt.close()
+        # plt.figure(figsize=(12, 8))
+        # sns.boxplot(data=subset, x="mean_drop", y="experiment", color=model2color[model], whis=(5, 95), legend=False)
+        # plt.xlabel(f"Whiskers denote 5th and 95th percentiles\n{N_SELECTED_TASKS} tasks from Natural Instructions")
+        # plt.ylabel("")
+        # plt.title(f"Mean performance change across prompt formats compared to default format\niid split")
+        # plt.savefig(f"{args.image_dir}/mean_drop_boxplot_{model}.png", dpi=350, bbox_inches="tight")
+        # plt.close()
+
+    plt.figure(figsize=(12, 8))
+    sns.boxplot(data=total_df, x="spread", y="experiment", hue="model", palette=model2color, legend=False)
+    plt.xlabel(f"Spread across prompt formats\n{N_SELECTED_TASKS} tasks from Natural Instructions")
+    plt.ylabel("")
+    plt.title("Spread across prompt formats\niid split")
+    plt.savefig(f"{args.image_dir}/all_boxplot.png", dpi=350, bbox_inches="tight")
+    plt.close()
+
+    plt.figure(figsize=(12, 8))
+    sns.boxplot(data=total_df, x="spread", y="experiment", hue="model", palette=model2color, legend=False)
+    plt.xlabel(f"Standard deviation of accuracy across prompt formats\n{N_SELECTED_TASKS} tasks from Natural Instructions")
+    plt.ylabel("")
+    plt.title("Standard deviation of accuracy across prompt formats\niid split")
+    plt.savefig(f"{args.image_dir}/std_all_boxplot.png", dpi=350, bbox_inches="tight")
+    plt.close()
 
     # plt.figure(figsize=(12, 8))
-    # sns.boxplot(data=total_df, x="spread", y="experiment", hue="model", palette=model2color, legend=False)
-    # plt.xlabel(f"Performance spread across prompt formats\n{N_SELECTED_TASKS} tasks from Natural Instructions")
+    # sns.barplot(data=total_df, x="spread", y="experiment", hue="model", errorbar=("pi", 90), palette=model2color, legend=False)
+    # plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
     # plt.ylabel("")
-    # plt.title("iid split")
-    # plt.savefig(f"{args.image_dir}/all_boxplot.png", dpi=350, bbox_inches="tight")
+    # plt.title("Spread across prompt formats\niid split")
+    # plt.savefig(f"{args.image_dir}/all_barplot.png", dpi=350, bbox_inches="tight")
     # plt.close()
 
     plt.figure(figsize=(12, 8))
-    sns.barplot(data=total_df, x="spread", y="experiment", hue="model", errorbar=("pi", 90), palette=model2color, legend=False)
-    plt.xlabel(f"Performance spread across prompt formats\n{N_SELECTED_TASKS} tasks from Natural Instructions")
-    plt.ylabel("")
-    plt.title("iid split")
-    plt.savefig(f"{args.image_dir}/all_barplot.png", dpi=350, bbox_inches="tight")
-    plt.close()
-
-    plt.figure(figsize=(12, 8))
     sns.boxplot(data=total_df, x="median_accuracy", y="experiment", hue="model", palette=model2color, legend=False)
-    plt.xlabel(f"Median accuracy across prompt formats\n{N_SELECTED_TASKS} tasks from Natural Instructions")
+    plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
     plt.ylabel("")
-    plt.title("iid split")
+    plt.title(f"Median accuracy across prompt formats\niid split")
     plt.savefig(f"{args.image_dir}/median_accuracy_all_boxplot.png", dpi=350, bbox_inches="tight")
     plt.close()
 
-    plt.figure(figsize=(12, 8))
-    sns.boxplot(data=total_df, x="mean_drop", y="experiment", hue="model", whis=(5, 95), palette=model2color, legend=False)
-    plt.xlabel(f"Mean performance drop across prompt formats compared to default format\nWhiskers denote 5th and 95th percentiles\n{N_SELECTED_TASKS} tasks from Natural Instructions")
-    plt.ylabel("")
-    plt.title("iid split")
-    plt.savefig(f"{args.image_dir}/mean_drop_boxplot.png", dpi=350, bbox_inches="tight")
-    plt.close()
+    # plt.figure(figsize=(12, 8))
+    # sns.boxplot(data=total_df, x="mean_drop", y="experiment", hue="model", whis=(5, 95), palette=model2color, legend=False)
+    # plt.xlabel(f"Whiskers denote 5th and 95th percentiles\n{N_SELECTED_TASKS} tasks from Natural Instructions")
+    # plt.ylabel("")
+    # plt.title("Mean performance change across prompt formats compared to default format\niid split")
+    # plt.savefig(f"{args.image_dir}/mean_drop_boxplot.png", dpi=350, bbox_inches="tight")
+    # plt.close()
