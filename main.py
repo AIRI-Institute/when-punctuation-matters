@@ -342,7 +342,7 @@ def make_parser():
 
     # params to set up evaluation settings
     parser.add_argument('--num_samples', type=int, default=1000, help='Maximum number of samples to evaluate for each format.')
-    parser.add_argument('--evaluation_metric', choices=['exact_prefix_matching', 'probability_ranking'])
+    parser.add_argument('--evaluation_metric', choices=['exact_prefix_matching', 'probability_ranking', 'exact_match'])
     parser.add_argument('--evaluation_type', type=str, choices=['full', 'format_spread', 'ensembles', 'default'],
                         help='Determines how to evaluate the array of formats defined. '
                              'Options are full evaluation of each node, or use Thompson Sampling to quickly find the format spread.')
@@ -485,6 +485,7 @@ def main():
     structured_prompt_format, global_constraints, extra_params_structured_prompt_format, \
     original_multiple_choice_output_format, args_compute_node_score, _ = _load_task(args)
     print('Task loaded.')
+    print(structured_prompt_format) 
 
     # 1.b. check that the evaluation metric is reasonable
     # Specifically, we can compute probability ranking metric only if the task is a classification task
