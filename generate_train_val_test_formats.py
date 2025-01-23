@@ -4,6 +4,7 @@ import copy
 import random
 import itertools
 from typing import List, Dict
+from joblib import Parallel, delayed
 
 from main import (
     _load_task,
@@ -168,6 +169,68 @@ def _value_assignment_is_valid(structured_prompt_format, global_constraints, val
     return holistic_node_format_sanity_checks(new_structured_prompt_format)
 
 
+def _get_element_types(structured_prompt_format, global_constraints):
+    all_pointers = pointers_to_all_objects(structured_prompt_format) + global_constraints
+    all_pointers_enumerated = [(e, i) for i, e in enumerate(all_pointers)]
+    pointer_action_pairs = create_pointer_action_type_pairs(
+        all_pointers_enumerated, allow_text_action_type=args.allow_text_action_type)
+    action_types = [action_type for _, _, action_type in pointer_action_pairs]
+    return action_types
+
+
+class Format:
+    def __init__(self, elements, element_types):
+        self.elements = elements
+        self.element_types = element_types
+
+        assert len(element_types) == len(elements), f"{len(element_types)=}, {len(elements)=}"
+        assert isinstance(elements, list), f"{type(elements)}"
+        assert isinstance(element_types, list), f"{type(element_types)}"
+        assert all(isinstance(el, str) for el in elements)
+        assert all(isinstance(el, str) for el in element_types)
+
+
+def transfer_format_to_new_task(old_format: Format, new_task_element_types: List[str]) -> Format:
+    assert all(el_type in old_format.element_types for el_type in new_task_element_types)
+
+    keys = list(set(old_format.element_types))
+    value_options = {k: [] for k in keys}
+    for element, element_type in zip(old_format.elements, old_format.element_types):
+        value_options[element_type].append(element)
+
+    new_elements = []
+
+    for element_type in new_task_element_types:
+        new_elements.append(value_options[element_type][0])
+        if len(value_options[element_type]) > 1:
+            value_options[element_type].pop(0)
+
+    return Format(new_elements, new_task_element_types)
+
+
+def _is_format_valid_for_task(args, task: str, format: Format, mapping_all_categories):
+    new_args = copy.deepcopy(args)
+    new_args.task_filename = task
+    structured_prompt_format, global_constraints, _, _, _, _ = _load_task(new_args)
+    new_task_element_types = _get_element_types(structured_prompt_format, global_constraints)
+    new_format = transfer_format_to_new_task(format, new_task_element_types)
+    
+    return _value_assignment_is_valid(
+        structured_prompt_format,
+        global_constraints,
+        new_format.elements,
+        args.allow_text_action_type,
+        mapping_all_categories
+    )
+
+def _is_format_valid_for_all_tasks(args, task_list: List[str], format: Format, mapping_all_categories):
+    results = Parallel(n_jobs=32)(
+        delayed(_is_format_valid_for_task)(args, task, format, mapping_all_categories)
+        for task in task_list
+    )
+    return all(results)
+    
+
 def value_assignment_str_to_indices(value_assignments, pointer_action_pairs, mapping_all_categories):
     value_assignments_ids = []
     for assignment in value_assignments:
@@ -185,105 +248,94 @@ def save_json(data, filename: str):
         json.dump(data, f, indent=2)
 
 
-def process_task(args, reference_action_type2test_elements: Dict[str, List[str]] | None) -> Dict:
-    """ Generates and saves a json file with test prompt formats, dataset examples order and some metadata (action_types).
-    Inputs:
-        args:
-            Mostly defined in main.py, with several arguments added below
-        reference_action_type2test_elements:
-            A mapping from action type (e.g. 'chose_space') to a list of possible options (e.g. [' ', '\n', '\t']).
-            Used to ensure consistent test formats across all tasks.
-    Outputs:
-        A dict with train, validation, test prompt formats, dataset examples order and some metadata (action_types).
+def _sample_single_format(args, mapping):
+    """Sample a single format using the given mapping."""
+    original_n = args.num_formats_to_analyze
+    args.num_formats_to_analyze = 1
+    value_assignments, dataset_ordered_ids, pointer_action_pairs = _sample_value_assignments(args, mapping)
+    args.num_formats_to_analyze = original_n
+    return value_assignments[0], dataset_ordered_ids, pointer_action_pairs
+
+def process_task(args, reference_task: str) -> Dict:
+    """Generates and saves a json file with test prompt formats, dataset examples order and some metadata.
+    Args:
+        args: Mostly defined in main.py, with several arguments added in this script
+        reference_task: Task to use for initial format sampling
+    Returns:
+        A dict with train, validation, test prompt formats, dataset examples order and some metadata (action_types)
     """
     task_filename_to_print = _get_task_filename_to_print(args)
     disable_text_action_type = 'textdisabled'
     metadata_filename = "metadata.txt"
-
+    
     random.seed(args.seed)
-
+    
     print(f"Processing task {args.task_filename}")
+    
+    filepath = os.path.join(args.output_dir,
+                           f'holistic_random_sample_{task_filename_to_print}_nodes_{args.num_formats_to_analyze}_{disable_text_action_type}.json')
 
-    filepath = os.path.join(args.output_dir, 
-                            f'holistic_random_sample_{task_filename_to_print}_nodes_{args.num_formats_to_analyze}_{disable_text_action_type}.json')
+    # Create reference args for sampling
+    reference_args = copy.deepcopy(args)
+    reference_args.task_filename = reference_task
 
+    # Define mapping based on mode
     if args.mode == "random":
-        args.num_formats_to_analyze = args.n_train + args.n_val + args.n_test
-        value_assignments, dataset_ordered_ids, pointer_action_pairs = _sample_value_assignments(args, VANILLA_MAPPING_ALL_CATEGORIES)
-        test = value_assignments[args.n_train + args.n_val:]
-
-        # If we have reference values for test formats, patch test
-        if reference_action_type2test_elements:
-            action_types = [action_type for _, _, action_type in pointer_action_pairs]
-
-            test = []
-            for index in range(args.n_test):
-                format = [reference_action_type2test_elements[action][index] for action in action_types]
-                test.append(format)
-
-        # Train will be defined implicitely, as a complement to test
-        train = []
+        mapping = VANILLA_MAPPING_ALL_CATEGORIES
     elif args.mode == "space":
-        args.num_formats_to_analyze = args.n_train
-        train, dataset_ordered_ids, pointer_action_pairs = _sample_value_assignments(args, SHORT_TRAIN_MAPPING_space)
-        args.num_formats_to_analyze = args.n_test
-        test, _, _ = _sample_value_assignments(args, LONG_TEST_MAPPING_space)
-
+        mapping = LONG_TEST_MAPPING_space
     elif args.mode == "separator_space":
-        args.num_formats_to_analyze = args.n_train
-        train, dataset_ordered_ids, pointer_action_pairs = _sample_value_assignments(args, SHORT_TRAIN_MAPPING_space_separator)
-        args.num_formats_to_analyze = args.n_test
-        test, _, _ = _sample_value_assignments(args, LONG_TEST_MAPPING_space_separator)
-
+        mapping = LONG_TEST_MAPPING_space_separator
     elif args.mode == "compositional_separator":
-        train_seps = [(e, e) for e in COMPOSITIONAL_TRAIN_SEPARATOR_LIST]
         test_seps = [(e, e) for e in COMPOSITIONAL_TEST_SEPARATOR_LIST]
-
-        args.num_formats_to_analyze = args.n_train
-        train, dataset_ordered_ids, pointer_action_pairs = _sample_value_assignments(args, VANILLA_MAPPING_ALL_CATEGORIES | {"chosen_separator": train_seps})
-
-        args.num_formats = args.n_test
-        test, _, _ = _sample_value_assignments(args, VANILLA_MAPPING_ALL_CATEGORIES | {"chosen_separator": test_seps})
-
+        mapping = VANILLA_MAPPING_ALL_CATEGORIES | {"chosen_separator": test_seps}
+        
         with open(f"{args.output_dir}/{metadata_filename}", "w") as f:
-            print("Train separators:", [e[0] for e in train_seps], file=f)
             print("Test separators:", [e[0] for e in test_seps], file=f)
-
+            
     elif args.mode == "compositional_separator_space":
-        train_seps = [(e, e) for e in COMPOSITIONAL_TRAIN_SEPARATOR_LIST]
         test_seps = [(e, e) for e in COMPOSITIONAL_TEST_SEPARATOR_LIST]
-        train_spaces = [(e, e) for e in COMPOSITIONAL_TRAIN_SPACE_LIST]
         test_spaces = [(e, e) for e in COMPOSITIONAL_TEST_SPACE_LIST]
-
-        args.num_formats_to_analyze = args.n_train
-        train, dataset_ordered_ids, pointer_action_pairs = _sample_value_assignments(args, VANILLA_MAPPING_ALL_CATEGORIES | {"chosen_separator": train_seps, "chosen_space": train_spaces})
-
-        args.num_formats = args.n_test
-        test, _, _ = _sample_value_assignments(args, VANILLA_MAPPING_ALL_CATEGORIES | {"chosen_separator": test_seps, "chosen_space": test_spaces})
-
+        mapping = VANILLA_MAPPING_ALL_CATEGORIES | {
+            "chosen_separator": test_seps,
+            "chosen_space": test_spaces
+        }
+        
         with open(f"{args.output_dir}/{metadata_filename}", "w") as f:
-            print("Train separators:", [e[0] for e in train_seps], file=f)
             print("Test separators:", [e[0] for e in test_seps], file=f)
-            print("Train spaces:", [e[0] for e in train_spaces], file=f)
             print("Test spaces:", [e[0] for e in test_spaces], file=f)
+            
     elif args.mode == "unseen_space":
-        train_spaces = [("\n", "\n")]
         test_spaces = [e for e in CHOSEN_SPACE_LIST if e[0] != "\n"]
-
-        args.num_formats_to_analyze = args.n_train
-        train, dataset_ordered_ids, pointer_action_pairs = _sample_value_assignments(args, VANILLA_MAPPING_ALL_CATEGORIES | {"chosen_space": train_spaces})
-
-        args.num_formats = args.n_test
-        test, _, _ = _sample_value_assignments(args, VANILLA_MAPPING_ALL_CATEGORIES | {"chosen_space": test_spaces})
-
+        mapping = VANILLA_MAPPING_ALL_CATEGORIES | {"chosen_space": test_spaces}
+        
         with open(f"{args.output_dir}/{metadata_filename}", "w") as f:
-            print("Train spaces:", [e[0] for e in train_spaces], file=f)
             print("Test spaces:", [e[0] for e in test_spaces], file=f)
     else:
         raise ValueError(f"{args.mode=} is not supported yet.")
 
+    # Sample test formats
+    test = []
+    attempts = 0
+    max_attempts = args.n_test * 10  # Prevent infinite loops
+    dataset_ordered_ids = None
+    
+    while len(test) < args.n_test and attempts < max_attempts:
+        value_assignment, dataset_ordered_ids, pointer_action_pairs = _sample_single_format(reference_args, mapping)
+        
+        # Create Format object for validation
+        format = Format(value_assignment, [action_type for _, _, action_type in pointer_action_pairs])
+        
+        if _is_format_valid_for_all_tasks(args, TASK_NAMES, format, mapping):
+            test.append(value_assignment)
+        
+        attempts += 1
+        
+    if len(test) < args.n_test:
+        raise RuntimeError(f"Could not generate enough valid test formats after {max_attempts} attempts")
+
     data = {
-        "train_formats": train,
+        "train_formats": [],
         "val_formats": [],
         "test_formats": test,
         "action_types": [action_type for _, _, action_type in pointer_action_pairs],
@@ -291,7 +343,6 @@ def process_task(args, reference_action_type2test_elements: Dict[str, List[str]]
     }
 
     save_json(data, filepath)
-
     return data
 
 
@@ -354,11 +405,11 @@ if __name__ == "__main__":
     # NOTE: due to implementation details, test formats obtained for task 070 with `reference_action_type2test_elements`=None
     # are different from test formats for task 070 with non-None `reference_action_type2test_elements`.
     args.task_filename = "task070_"
-    task070_data = process_task(args, reference_action_type2test_elements=None)
+    task070_data = process_task(args, reference_task="task070")
     reference_action_type2test_elements = build_reference_action_type2test_elements(task070_data, args.mode)
 
     # Generate formats
     for task_name in TASK_NAMES:
         args.task_filename = task_name + "_"
         args.num_formats_to_analyze = original_n_nodes
-        process_task(args, reference_action_type2test_elements)
+        process_task(args, reference_task=task_name)
