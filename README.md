@@ -2,16 +2,45 @@
 
 Method: finetuning on instruction following dataset with prompt format augmentations.
 
+## Getting data
+
+Clone `natural-instructions` so that they are located next to `prompt-instability`:
+```
+git clone git@github.com:allenai/natural-instructions.git
+```
+
 ## Setup
 
 ```
+cd prompt-instability
+
 mamba create -n aa python=3.11 pytorch torchvision torchaudio pytorch-cuda=12.4 accelerate aiohttp click datasets einops numpy matplotlib openai pandas peft=0.14.0 protobuf safetensors scikit-learn scipy seaborn sentence-transformers sentencepiece statsmodels sympy tqdm transformers wandb xgboost  -c pytorch -c nvidia -y
 
 pip install trl==0.12.1 unsloth==2024.11.7 xformers==0.0.28.post3 bitsandbytes==0.44.1 wandb==0.18.7
+
 mamba install -n aa ipykernel --update-deps --force-reinstall
 ```
 
-# [Source README] FormatSpread _or: How I learned to start worrying about prompt formatting_
+Prepare a directory with format train/test splits:
+```
+bash scripts/generate_train_test_splits.sh
+```
+
+Launch a single evaluation:
+```
+bash scripts/launch.sh 0 unsloth/Llama-3.2-1B-Instruct 2 random ---iid-no-chat-template 0
+```
+(refer to `scripts/launch.sh` to understand the order and meaning of arguments)
+
+Launch sequential evaluation of original model, finetuning and evaluation of finetuned model:
+```
+mkdir training
+
+bash scripts/autoresearcher.sh 0 unsloth/Llama-3.2-1B-Instruct random ---iidx2-no-chat-template llama1b_iidx2
+```
+(refer to `scripts/autoresearcher.sh` to understand the order and meaning of arguments)
+
+# [Original README] FormatSpread _or: How I learned to start worrying about prompt formatting_
 
 ![alt text](format_spread_figure_1_task280.png)
 
