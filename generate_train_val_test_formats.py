@@ -295,29 +295,9 @@ def process_task(args, reference_action_type2test_elements: Dict[str, List[str]]
     return data
 
 
-TASK_NAMES = ["task050", "task065", "task069", "task070", "task114", "task133", "task155", "task158", "task161", "task162", "task163", "task190", "task213", "task214", "task220", "task279", "task280", "task286", "task296", "task297", "task316", "task317", "task319", "task320", "task322", "task323", "task325", "task326", "task327", "task328", "task335", "task337", "task385", "task580", "task607", "task608", "task609", "task904", "task905", "task1186", "task1283", "task1284", "task1297", "task1347", "task1387", "task1419", "task1420", "task1421", "task1423", "task1502", "task1612", "task1678", "task1724"]
-
-if __name__ == "__main__":
-    parser = make_parser()
-    parser.add_argument("--n-train", type=int)
-    parser.add_argument("--n-val", type=int)
-    parser.add_argument("--n-test", type=int)
-    parser.add_argument("--mode")
-    parser.add_argument("--seed", type=int)
-
-    args = parser.parse_args()
-    args.disable_text_action_type = True
-    args.allow_text_action_type = not args.disable_text_action_type
-    # original_n_nodes = args.num_formats_to_analyze
-
-    # For "random" mode, we need to unify the test formats across all tasks.
-    # So we sample concrete formats for task070 (which has all possible prompt components)
-    # and then use the same formats for other tasks (dropping non-applicable elements if needed,
-    # e.g. discarding components related to option formatting).
-    # NOTE: due to implementation details, test formats obtained for task 070 with `reference_action_type2test_elements`=None
-    # are different from test formats for task 070 with non-None `reference_action_type2test_elements`.
-    args.task_filename = "task070_"
-    task070_data = process_task(args, reference_action_type2test_elements=None)
+def build_reference_action_type2test_elements(task070_data, mode):
+    if mode != "random":
+        return None
 
     reference_action_type2test_elements = {}
     for action_type in task070_data["action_types"]:
@@ -345,9 +325,40 @@ if __name__ == "__main__":
         key: value[:args.n_test] for key, value in reference_action_type2test_elements.items()
     }
 
+    for element_options in reference_action_type2test_elements.values():
+        print(len(element_options))
     assert all(len(element_options) == args.n_test for element_options in reference_action_type2test_elements.values())
+
+    return reference_action_type2test_elements
+
+# "task190" is excluded due to incorrect labels
+TASK_NAMES = ["task050", "task065", "task069", "task070", "task114", "task133", "task155", "task158", "task161", "task162", "task163", "task213", "task214", "task220", "task279", "task280", "task286", "task296", "task297", "task316", "task317", "task319", "task320", "task322", "task323", "task325", "task326", "task327", "task328", "task335", "task337", "task385", "task580", "task607", "task608", "task609", "task904", "task905", "task1186", "task1283", "task1284", "task1297", "task1347", "task1387", "task1419", "task1420", "task1421", "task1423", "task1502", "task1612", "task1678", "task1724"]
+
+if __name__ == "__main__":
+    parser = make_parser()
+    parser.add_argument("--n-train", type=int)
+    parser.add_argument("--n-val", type=int)
+    parser.add_argument("--n-test", type=int)
+    parser.add_argument("--mode")
+    parser.add_argument("--seed", type=int)
+
+    args = parser.parse_args()
+    args.disable_text_action_type = True
+    args.allow_text_action_type = not args.disable_text_action_type
+    original_n_nodes = args.num_formats_to_analyze
+
+    # For "random" mode, we need to unify the test formats across all tasks.
+    # So we sample concrete formats for task070 (which has all possible prompt components)
+    # and then use the same formats for other tasks (dropping non-applicable elements if needed,
+    # e.g. discarding components related to option formatting).
+    # NOTE: due to implementation details, test formats obtained for task 070 with `reference_action_type2test_elements`=None
+    # are different from test formats for task 070 with non-None `reference_action_type2test_elements`.
+    args.task_filename = "task070_"
+    task070_data = process_task(args, reference_action_type2test_elements=None)
+    reference_action_type2test_elements = build_reference_action_type2test_elements(task070_data, args.mode)
 
     # Generate formats
     for task_name in TASK_NAMES:
         args.task_filename = task_name + "_"
+        args.num_formats_to_analyze = original_n_nodes
         process_task(args, reference_action_type2test_elements)
