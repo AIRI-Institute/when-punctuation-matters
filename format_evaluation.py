@@ -173,7 +173,7 @@ class TemplateEnsemblesAlgorithmAmongPrompts:
             num_samples_to_test=num_samples_to_test,
             ensemble_num=ensemble_num)
 
-    def evaluate_node(self, nodes_list, num_samples_to_test, ensemble_num):
+    def evaluate_node(self, nodes_list, value_assignment, num_samples_to_test, ensemble_num):
         # copy structured_prompt_format to avoid modifying the original
         ensemble_size = len(nodes_list)
         prompt_formats_list = []
@@ -207,12 +207,12 @@ class TemplateEnsemblesAlgorithmAmongPrompts:
 
             # update logs that do not require accuracy
             new_node = self._get_node_from_format(structured_prompt_format)
-            if new_node in self.generation_order:
+            if str(value_assignment[i]) in self.generation_order:
                 self.metadata['bit_representations'][new_node].append(all_action_value_names)
                 return -1 if self.objective == 'lowest_accuracy' else 1
             self.metadata['bit_representations'][new_node] = [all_action_value_names]
             self.all_structured_prompt_formats[new_node] = [structured_prompt_format, global_constraints]
-            self.generation_order[new_node] = len(self.generation_order)
+            self.generation_order[str(value_assignment[i])] = len(self.generation_order)
             prompt_formats_list.append(structured_prompt_format)
         # compute accuracy and update accuracy logs
         acc = self._compute_node_score(prompt_formats_list, num_samples_to_test, ensemble_num)
@@ -234,7 +234,7 @@ class TemplateEnsemblesAlgorithmAmongPrompts:
             # convert from list(list(str)) to list(list(int))
             # this func assumes same order as in action_value_pairs, but in text (not id in array, to be robust to changes)
             value_assignments_ids = value_assignment_str_to_indices(value_assignment, self.pointer_action_pairs)
-            self.evaluate_node(value_assignments_ids, num_samples_to_test, ensemble_num)
+            self.evaluate_node(value_assignments_ids, value_assignment, num_samples_to_test, ensemble_num)
 
 class GeneticAlgorithmAmongPrompts:
 
@@ -265,7 +265,7 @@ class GeneticAlgorithmAmongPrompts:
             solved_format, original_multiple_choice_output_format)
         self.original_multiple_choice_classes = original_multiple_choice_classes
 
-        self.generation_order = {solved_format: 0}
+        self.generation_order = {"[]": 0}
         self.edges = []
         self.allow_text_action_type = allow_text_action_type
 
@@ -383,7 +383,7 @@ class GeneticAlgorithmAmongPrompts:
             resolved_prompt=self._get_node_from_format(structured_prompt_format),
             num_samples_to_test=num_samples_to_test)
 
-    def evaluate_node(self, value_assignment_id: List[int], num_samples_to_test):
+    def evaluate_node(self, value_assignment_id: List[int], value_assignment, num_samples_to_test):
 
         # copy structured_prompt_format to avoid modifying the original
         resolved_prompt = self._get_node_from_format(self.initial_structured_prompt_format)
@@ -410,14 +410,14 @@ class GeneticAlgorithmAmongPrompts:
 
         # update logs that do not require accuracy
         new_node = self._get_node_from_format(structured_prompt_format)
-        if new_node in self.generation_order:
+        if str(value_assignment) in self.generation_order:
             self.metadata['bit_representations'][new_node].append(all_action_value_names)
             acc = self.all_structured_prompt_formats_accuracies[new_node]
             return acc[0] * (-1 if self.objective == 'lowest_accuracy' else 1)
 
         self.metadata['bit_representations'][new_node] = [all_action_value_names]
         self.all_structured_prompt_formats[new_node] = [structured_prompt_format, global_constraints]
-        self.generation_order[new_node] = len(self.generation_order)
+        self.generation_order[str(value_assignment)] = len(self.generation_order)
 
         # compute accuracy and update accuracy logs
         acc = self._compute_node_score(structured_prompt_format, num_samples_to_test)
@@ -439,8 +439,8 @@ class GeneticAlgorithmAmongPrompts:
         value_assignments_ids = value_assignment_str_to_indices(value_assignments, self.pointer_action_pairs)
 
         # run all nodes
-        for value_assignment_id in tqdm(value_assignments_ids, desc="nodes"):
-            self.evaluate_node(value_assignment_id, num_samples_to_test)
+        for value_assignment_id, value_assignment in tqdm(zip(value_assignments_ids, value_assignments), desc="nodes"):
+            self.evaluate_node(value_assignment_id, value_assignment, num_samples_to_test)
 
 
 class ThompsonSamplingAlgorithmAmongPrompts(GeneticAlgorithmAmongPrompts):
