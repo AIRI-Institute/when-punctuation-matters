@@ -5,6 +5,8 @@ import random
 import itertools
 from typing import List, Dict
 from joblib import Parallel, delayed
+from pathlib import Path
+from collections import Counter
 
 from main import (
     _load_task,
@@ -113,6 +115,10 @@ LONG_TEST_MAPPING_space_separator = {
 
 ### Code
 
+def load_json(filename):
+    with open(filename, "r") as f:
+        return json.load(f)
+
 def _sample_value_assignments(args, mapping_all_categories):
     # load task [we might do it twice, but this first time is to load the structured_prompt_format]
     structured_prompt_format, global_constraints, extra_params_structured_prompt_format, \
@@ -210,7 +216,7 @@ def transfer_format_to_new_task(old_format: Format, new_task_element_types: List
 
 def _is_format_valid_for_task(args, task: str, format: Format, mapping_all_categories):
     new_args = copy.deepcopy(args)
-    new_args.task_filename = task
+    new_args.task_filename = task + "_"
     structured_prompt_format, global_constraints, _, _, _, _ = _load_task(new_args)
     new_task_element_types = _get_element_types(structured_prompt_format, global_constraints)
     new_format = transfer_format_to_new_task(format, new_task_element_types)
@@ -256,28 +262,45 @@ def _sample_single_format(args, mapping):
     args.num_formats_to_analyze = original_n
     return value_assignments[0], dataset_ordered_ids, pointer_action_pairs
 
-def process_task(args, reference_task: str) -> Dict:
+
+def _get_format_hash(space_str: str, separator_str: str, text_descriptor_fn_str: str) -> int:
+    """Map a sequence of essential format elements to an integer.
+    """
+    format_str = space_str + separator_str + text_descriptor_fn_str
+    return hash(format_str)
+
+
+def _get_value_assignment_hash(value_assignment, action_types):
+    space = None
+    sep = None
+    text_descriptor_fn = None
+
+    for element, el_type in zip(value_assignment, action_types):
+        match el_type:
+            case "chosen_space": space = space or element
+            case "chosen_separator": sep = sep or element
+            case "text_descriptor_fn": text_descriptor_fn = text_descriptor_fn or element
+
+    return _get_format_hash(space, sep, text_descriptor_fn)
+
+
+def generate_splits_for_tasks(args, reference_task: str, task_list: List[str]) -> List[Dict]:
     """Generates and saves a json file with test prompt formats, dataset examples order and some metadata.
     Args:
-        args: Mostly defined in main.py, with several arguments added in this script
-        reference_task: Task to use for initial format sampling
+        args: Mostly defined in main.py, with several arguments added in this script.
+        reference_task: Task to use for initial format sampling.
     Returns:
         A dict with train, validation, test prompt formats, dataset examples order and some metadata (action_types)
     """
-    task_filename_to_print = _get_task_filename_to_print(args)
-    disable_text_action_type = 'textdisabled'
     metadata_filename = "metadata.txt"
     
     random.seed(args.seed)
-    
-    print(f"Processing task {args.task_filename}")
-    
-    filepath = os.path.join(args.output_dir,
-                           f'holistic_random_sample_{task_filename_to_print}_nodes_{args.num_formats_to_analyze}_{disable_text_action_type}.json')
 
     # Create reference args for sampling
     reference_args = copy.deepcopy(args)
     reference_args.task_filename = reference_task
+    
+    print(f"Processing task {reference_args.task_filename}")
 
     # Define mapping based on mode
     if args.mode == "random":
@@ -316,71 +339,69 @@ def process_task(args, reference_task: str) -> Dict:
 
     # Sample test formats
     test = []
-    attempts = 0
+    test_hashes = set()
     max_attempts = args.n_test * 10  # Prevent infinite loops
-    dataset_ordered_ids = None
+    action_types = None
     
-    while len(test) < args.n_test and attempts < max_attempts:
-        value_assignment, dataset_ordered_ids, pointer_action_pairs = _sample_single_format(reference_args, mapping)
-        
+    for attempt in range(max_attempts):
+        value_assignment, _, current_pointer_action_pairs = _sample_single_format(reference_args, mapping)
+
+        # List comprehension is only done once, at first iteration. 
+        # No need to compute it each time, as action_types are constant for a fixed task
+        action_types = action_types or [action_type for _, _, action_type in current_pointer_action_pairs]
+
+        if _get_value_assignment_hash(value_assignment, action_types) in test_hashes:
+            # Let current format be F_new.
+            # There is already some format F_old and some task T such that
+            # if we adapt F_new and F_old for task T, the resulting formats will be identical.
+            continue
+
         # Create Format object for validation
-        format = Format(value_assignment, [action_type for _, _, action_type in pointer_action_pairs])
+        format = Format(value_assignment, action_types)
         
-        if _is_format_valid_for_all_tasks(args, TASK_NAMES, format, mapping):
+        if _is_format_valid_for_all_tasks(args, task_list, format, mapping):
             test.append(value_assignment)
+            test_hashes.add(_get_value_assignment_hash(value_assignment, action_types))
         
-        attempts += 1
+        print(f"{attempt=}, {len(test_hashes)=}")
+
+        if len(test) == args.n_test:
+            break
         
     if len(test) < args.n_test:
         raise RuntimeError(f"Could not generate enough valid test formats after {max_attempts} attempts")
 
-    data = {
-        "train_formats": [],
-        "val_formats": [],
-        "test_formats": test,
-        "action_types": [action_type for _, _, action_type in pointer_action_pairs],
-        "dataset_ordered_ids": dataset_ordered_ids,
-    }
+    # Save formats for each task and collect results
+    all_task_data = []
+    
+    for task in task_list:
+        task_args = copy.deepcopy(args)
+        task_args.task_filename = task + "_"
+        
+        # Get task-specific dataset ordering and action types
+        _, task_dataset_ordered_ids, task_pointer_action_pairs = _sample_single_format(task_args, mapping)
+        task_action_types = [action_type for _, _, action_type in task_pointer_action_pairs]
 
-    save_json(data, filepath)
-    return data
-
-
-def build_reference_action_type2test_elements(task070_data, mode):
-    if mode != "random":
-        return None
-
-    reference_action_type2test_elements = {}
-    for action_type in task070_data["action_types"]:
-        reference_action_type2test_elements[action_type] = []
-
-    for format in task070_data["test_formats"]:
-        for element, action_type in zip(format, task070_data["action_types"]):
-            reference_action_type2test_elements[action_type].append(element)
-
-    """
-    Task 70 has following action types:
-       ['chosen_space',
-        'chosen_item_wrapper',
-        'chosen_number_format',
-        'chosen_space',
-        'chosen_separator',
-        'chosen_separator_text_and_option',
-        'text_descriptor_fn',
-        'chosen_separator']
-    'chosen_space' and 'chosen_separator' are mentioned twice, and the code above appends elements 
-    from both instances of e.g. 'chosen_space' in one list, resulting in more than 'args.n_test' options.
-    So we need to truncate them.
-    """
-    reference_action_type2test_elements = {
-        key: value[:args.n_test] for key, value in reference_action_type2test_elements.items()
-    }
-
-    for element_options in reference_action_type2test_elements.values():
-        print(len(element_options))
-    assert all(len(element_options) == args.n_test for element_options in reference_action_type2test_elements.values())
-
-    return reference_action_type2test_elements
+        # Transfer formats to this task
+        task_test_formats = []
+        for format in test:
+            task_format = transfer_format_to_new_task(Format(format, action_types), task_action_types)
+            task_test_formats.append(task_format.elements)
+            
+        task_data = {
+            "train_formats": [],
+            "val_formats": [], 
+            "test_formats": task_test_formats,
+            "action_types": task_action_types,
+            "dataset_ordered_ids": task_dataset_ordered_ids,
+        }
+        
+        task_filepath = os.path.join(args.output_dir,
+                                   f'holistic_random_sample_{task}_nodes_{args.num_formats_to_analyze}_textdisabled.json')
+        save_json(task_data, task_filepath)
+        all_task_data.append(task_data)
+    
+    return all_task_data
 
 # "task190" is excluded due to incorrect labels
 TASK_NAMES = ["task050", "task065", "task069", "task070", "task114", "task133", "task155", "task158", "task161", "task162", "task163", "task213", "task214", "task220", "task279", "task280", "task286", "task296", "task297", "task316", "task317", "task319", "task320", "task322", "task323", "task325", "task326", "task327", "task328", "task335", "task337", "task385", "task580", "task607", "task608", "task609", "task904", "task905", "task1186", "task1283", "task1284", "task1297", "task1347", "task1387", "task1419", "task1420", "task1421", "task1423", "task1502", "task1612", "task1678", "task1724"]
@@ -396,20 +417,21 @@ if __name__ == "__main__":
     args = parser.parse_args()
     args.disable_text_action_type = True
     args.allow_text_action_type = not args.disable_text_action_type
-    original_n_nodes = args.num_formats_to_analyze
 
-    # For "random" mode, we need to unify the test formats across all tasks.
-    # So we sample concrete formats for task070 (which has all possible prompt components)
-    # and then use the same formats for other tasks (dropping non-applicable elements if needed,
-    # e.g. discarding components related to option formatting).
-    # NOTE: due to implementation details, test formats obtained for task 070 with `reference_action_type2test_elements`=None
-    # are different from test formats for task 070 with non-None `reference_action_type2test_elements`.
-    args.task_filename = "task070_"
-    task070_data = process_task(args, reference_task="task070")
-    reference_action_type2test_elements = build_reference_action_type2test_elements(task070_data, args.mode)
+    reference_task = "task1297_"
+    generate_splits_for_tasks(args, reference_task, TASK_NAMES)
 
-    # Generate formats
-    for task_name in TASK_NAMES:
-        args.task_filename = task_name + "_"
-        args.num_formats_to_analyze = original_n_nodes
-        process_task(args, reference_task=task_name)
+    # Coherence check
+    dir = Path(args.output_dir) / args.mode
+    dir_to_lengths = {}
+
+    for json_file in dir.glob(f"*nodes_{args.n_test}*.json"):
+        data = load_json(json_file)
+        
+        # Hash each format by joining its elements and count unique hashes
+        format_hashes = set()
+        for format in data["test_formats"]:
+            format_str = "".join(str(x) for x in format)
+            format_hashes.add(hash(format_str))
+            
+        assert len(format_hashes) == args.n_test, f"{json_file} has only {len(format_hashes)} unique hashes"

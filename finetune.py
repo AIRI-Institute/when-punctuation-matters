@@ -14,7 +14,13 @@ from unsloth import FastLanguageModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template, standardize_sharegpt, train_on_responses_only
 from transformers import TrainingArguments, DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
 
-from generate_train_val_test_formats import VANILLA_MAPPING_ALL_CATEGORIES, COMPOSITIONAL_TRAIN_SEPARATOR_LIST, COMPOSITIONAL_TRAIN_SPACE_LIST, TASK_NAMES
+from generate_train_val_test_formats import (
+    VANILLA_MAPPING_ALL_CATEGORIES,
+    COMPOSITIONAL_TRAIN_SEPARATOR_LIST,
+    COMPOSITIONAL_TRAIN_SPACE_LIST,
+    TASK_NAMES,
+    _get_format_hash
+)
 
 
 def load_model(name: str, max_seq_length: int, dtype: type, load_in_4bit: bool, device: str):
@@ -32,13 +38,6 @@ def load_model(name: str, max_seq_length: int, dtype: type, load_in_4bit: bool, 
 def load_json(path):
     with open(path, "r") as f:
         return json.load(f)
-
-
-def _get_format_hash(space_str: str, separator_str: str, text_descriptor_fn_str: str) -> int:
-    """Map a sequence of essential format elements to an integer.
-    """
-    format_str = space_str + separator_str + text_descriptor_fn_str
-    return hash(format_str)
 
 
 def augment_conversation(conversation, format_split_mode: str, test_format_hashes: Set[int] | None) -> Dict[str, str]:
