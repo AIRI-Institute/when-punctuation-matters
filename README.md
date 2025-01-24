@@ -21,18 +21,18 @@ pip install trl==0.12.1 unsloth==2024.11.7 xformers==0.0.28.post3 bitsandbytes==
 mamba install -n aa ipykernel --update-deps --force-reinstall
 ```
 
-Prepare a directory with format train/test splits:
+Prepare a directory with format train/test splits (this should run several minutes):
 ```
-bash scripts/generate_train_test_splits.sh
+bash scripts/generate_test_splits.sh
 ```
 
-Launch a single evaluation:
+Launch a single evaluation (several hours):
 ```
 bash scripts/launch.sh 0 unsloth/Llama-3.2-1B-Instruct 2 random ---iid-no-chat-template 0
 ```
 (refer to `scripts/launch.sh` to understand the order and meaning of arguments)
 
-Launch sequential evaluation of original model, finetuning and evaluation of finetuned model:
+Launch sequential evaluation of original model, finetuning and evaluation of finetuned model (should be under 24 hours):
 ```
 mkdir training
 
