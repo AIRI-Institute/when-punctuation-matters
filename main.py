@@ -424,7 +424,7 @@ def main():
             print(f"Loading formats from {args.nodes_to_evaluate_filepath}")
             tmp = json.load(open(args.nodes_to_evaluate_filepath, 'r'))
             valid_value_assignments = tmp['valid_value_assignments'] if "valid_value_assignments" in tmp else tmp["test_formats"]
-            assert len(valid_value_assignments) == args.num_formats_to_analyze, f"{len(valid_value_assignments)=}, {args.num_format_to_analyze=}"
+            assert len(valid_value_assignments) == args.num_formats_to_analyze, f"{len(valid_value_assignments)=}, {args.num_formats_to_analyze=}"
             dataset_ordered_ids = tmp['dataset_ordered_ids']
         elif os.path.exists(filepath):
             tmp = json.load(open(filepath, 'r'))
@@ -485,7 +485,6 @@ def main():
     structured_prompt_format, global_constraints, extra_params_structured_prompt_format, \
     original_multiple_choice_output_format, args_compute_node_score, _ = _load_task(args)
     print('Task loaded.')
-    print(structured_prompt_format) 
 
     # 1.b. check that the evaluation metric is reasonable
     # Specifically, we can compute probability ranking metric only if the task is a classification task
