@@ -333,6 +333,7 @@ def make_parser():
 
     # params to create or load a set of formats to evaluate
     parser.add_argument('--num_formats_to_analyze', type=int, default=None)
+    parser.add_argument('--expected_number_of_analyzed_formats_in_file', type=int, default=None)
     parser.add_argument('--num_edges_to_analyze', type=int, default=None, help='Use for atomic changes experiment.')
     parser.add_argument('--extend_graph_paths_from_file', type=str, default=None,
                         help='Use solely for non-monotonic paths experiment. Only include filename of old 499 samples file.')
@@ -387,13 +388,15 @@ def main():
             results = json.load(f)
             n_formats_evaluated = len(results["all_structured_prompt_formats_accuracies"])
 
-        if n_formats_evaluated == args.num_formats_to_analyze + 1:
+        expected_formats_num = args.num_formats_to_analyze + 1 if args.expected_number_of_analyzed_formats_in_file is None else args.expected_number_of_analyzed_formats_in_file
+
+        if n_formats_evaluated == expected_formats_num:
             print(f"Already run evaluations for {_get_output_filename(args, disable_text_action_type)}.json")
             return
-        elif n_formats_evaluated > args.num_formats_to_analyze + 1:
+        elif n_formats_evaluated > expected_formats_num:
             raise ValueError(f"More formats evaluated than expected, task {args.task_filename}\n{args}")
         else:
-            print(f"{n_formats_evaluated} / {args.num_formats_to_analyze + 1} formats evaluted, re-starting task {args.task_filename}")
+            print(f"{n_formats_evaluated} / {expected_formats_num} formats evaluted, re-starting task {args.task_filename}")
     else:
         print(f"Starting task {args.task_filename}")
     os.makedirs(args.output_dir, exist_ok=True)
