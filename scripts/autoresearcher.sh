@@ -6,7 +6,8 @@ suffix=$4                       # e.g. "---iid-no-chat-template"
 finetune_output_dir=$5          # e.g. "llama1b_iid"
 
 ### Setting some variables ###
-dataset="natural-instructions"
+# dataset="natural-instructions"
+dataset="data/df_hermes_simple_answers.csv"
 # Splits by `/` and takes last part (which is model's name)
 model_name=$( echo ${full_huggingface_model_name} | rev | cut -d / -f1 | rev )
 finetuned_model_name=${model_name}_lora

@@ -14,7 +14,7 @@ from unsloth import FastLanguageModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template, standardize_sharegpt, train_on_responses_only
 from transformers import TrainingArguments, DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
 
-from generate_train_val_test_formats import (
+from generate_test_formats import (
     VANILLA_MAPPING_ALL_CATEGORIES,
     COMPOSITIONAL_TRAIN_SEPARATOR_LIST,
     COMPOSITIONAL_TRAIN_SPACE_LIST,

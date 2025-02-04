@@ -98,7 +98,7 @@ def collect_spreads(paths: List[str]) -> pd.DataFrame:
 def parse_args():
     parser = ArgumentParser()
     parser.add_argument("--root-dir", default="exp")
-    parser.add_argument("---image-dir", default="images")
+    parser.add_argument("--image-dir", default="images")
     parser.add_argument("--num-nodes", type=int, default=10)
     parser.add_argument("-e", "--experiment-names", nargs="+")
 
@@ -112,6 +112,8 @@ if __name__ == "__main__":
     args = parse_args()
 
     total_df = []
+
+    Path(args.image_dir).mkdir()
 
     experiment_names = args.experiment_names if args.experiment_names else \
         sorted([filename.name for filename in Path(args.root_dir).iterdir() if filename.is_dir()])
@@ -139,8 +141,8 @@ if __name__ == "__main__":
     experiment_names = [name for name in experiment_names if "no-chat-template" in name]
     experiment_names = [name for name in experiment_names if ("instruct" in name.lower() or "it" in name)]
     # experiment_names = [name for name in experiment_names if "Llama-3.2-3B" in name]
-    experiment_names = [name for name in experiment_names if "Llama-3.2-3B" in name or "Qwen2.5-3B" in name or "gemma-2-2b" in name]
-    # experiment_names = [name for name in experiment_names if "Llama-3.1-8B" in name or "Qwen2.5-7B" in name or "gemma-2-9b" in name]
+    # experiment_names = [name for name in experiment_names if "Llama-3.2-3B" in name or "Qwen2.5-3B" in name or "gemma-2-2b" in name]
+    experiment_names = [name for name in experiment_names if "Llama-3.1-8B" in name or "Qwen2.5-7B" in name or "gemma-2-9b" in name]
     experiment_names = [name for name in experiment_names if ("lora" not in name) or ("lora" in name and "iid" in name)]
 
     for n in experiment_names:
@@ -160,11 +162,13 @@ if __name__ == "__main__":
         df = collect_spreads(evaluated_tasks_result_paths)
 
         tail = tail.replace("no-chat-template-", "")
+        if "lora" in model_name:
+            tail = tail.replace("iidx2", "in-domain-LoRA")
+            model_name = model_name[:-len("_lora")]
+        else:
+            tail = tail.replace("iidx2-", "")
 
         df["experiment"] = f"{model_name:>30}{tail:>40}"
-
-        if model_name.endswith("_lora"):
-            model_name = model_name[:-len("_lora")]
         df["model"] = model_name
 
         df.to_csv(subdir / "spreads.csv")
