@@ -330,6 +330,7 @@ def make_parser():
     # params to load a task
     parser.add_argument('--task_filename', type=str, required=True)
     parser.add_argument('--dataset_name', type=str, choices=['natural-instructions', 'instruction-induction'])
+    parser.add_argument('--use_unbalanced_tasks', type=int, default=0, help='Use unbalanced task files')
 
     # params to create or load a set of formats to evaluate
     parser.add_argument('--num_formats_to_analyze', type=int, default=None)

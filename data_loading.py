@@ -8,6 +8,7 @@ from parsing_supernatural_instructions_tasks import SUPERNATURAL_INSTRUCTIONS_TA
     create_initial_structured_prompt_format
 
 SUPERNATURAL_INSTRUCTIONS_DIRECTORY = '../natural-instructions/tasks'
+UNBALANCED_SUPERNATURAL_INSTRUCTIONS_DIRECTORY = '../natural-instructions/unbalanced_tasks'
 INSTRUCTION_INDUCTION_DIRECTORY = '../instruction-induction'
 
 STRING_ALL_CHARACTERS_FOR_REGEX_MATCHING = "([A-Za-z0-9α-ωΑ-Ω“”‘’′`,.…'-–—−:∶\(\)\[\]{}/%\?\!\\\" ;$≤≥≠†€₹→≡~∨⊃·°•∃∀ʻ&⁄\_#\\n𝑆𝑚√𝑠𝑁𝐴𝑒𝑅𝑇ι⟩⟨›‹ου‖♥‰�龍►➥™,‚∼⋅]+)"
@@ -60,13 +61,14 @@ def _extract_fields_from_dataset(regex_sentence_extractor_dict, dataset, num_sam
     return input_fields_list, outputs_list, regex_key_idx_list, selected_ids
 
 
-def _load_raw_dataset_supernatural_instructions(task_filename):
+def _load_raw_dataset_supernatural_instructions(args):
     # find filename based on task_filename
-    task_filenames = [f for f in os.listdir(SUPERNATURAL_INSTRUCTIONS_DIRECTORY) if task_filename in f]
+    dir_path = SUPERNATURAL_INSTRUCTIONS_DIRECTORY if not args.use_unbalanced_tasks else UNBALANCED_SUPERNATURAL_INSTRUCTIONS_DIRECTORY
+    task_filenames = [f for f in os.listdir(dir_path) if args.task_filename in f]
     assert len(task_filenames) == 1, f"{task_filenames} should be length = 1"
     task_filename = task_filenames[0]
 
-    filepath = os.path.join(SUPERNATURAL_INSTRUCTIONS_DIRECTORY, task_filename)
+    filepath = os.path.join(dir_path, task_filename)
     raw_dataset = json.load(open(filepath, 'r'))
     return raw_dataset
 
@@ -85,7 +87,7 @@ def set_up_prompt_variation_exploration_without_extra_files(
         regex extracting fields
     """
 
-    raw_dataset = _load_raw_dataset_supernatural_instructions(args.task_filename)
+    raw_dataset = _load_raw_dataset_supernatural_instructions(args)
     demonstration_definition = raw_dataset['Definition'][0] if instruction is None else instruction
 
     raw_dataset = raw_dataset['Instances']
@@ -147,7 +149,7 @@ def load_supernatural_instructions_task(args):
 
     # SuperNaturalInstructions Tasks without a defined format
     if any(t in args.task_filename for t in SUPERNATURAL_INSTRUCTIONS_TASKS_WITH_NO_FORMAT):
-        raw_dataset = _load_raw_dataset_supernatural_instructions(args.task_filename)
+        raw_dataset = _load_raw_dataset_supernatural_instructions(args)
         demonstration_definition = raw_dataset['Definition'][0]
         raw_dataset = raw_dataset['Instances']
         return _setup_non_formatted_dataset_with_one_field_only(args, raw_dataset, demonstration_definition)
