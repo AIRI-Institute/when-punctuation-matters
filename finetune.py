@@ -21,7 +21,7 @@ from generate_test_formats import (
     TASK_NAMES,
     _get_format_hash
 )
-
+from utils import INSTRUCTION_PART_TAG, RESPONSE_PART_TAG
 
 def load_model(name: str, max_seq_length: int, dtype: type, load_in_4bit: bool, device: str):
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -79,8 +79,11 @@ def augment_conversation(conversation, format_split_mode: str, test_format_hashe
 
     _text_descriptor_first = _text_descriptor_fn(random.choice(verbalizer_first_options))
     _text_descriptor_second = _text_descriptor_fn(random.choice(verbalizer_second_options))
-    text = f"{_text_descriptor_first}{_separator}{filtered_conversation[0]['value']}{_space}"\
-            f"{_text_descriptor_second}{_separator}{filtered_conversation[1]['value']}"
+    text = f"{INSTRUCTION_PART_TAG}"\
+            f"{_text_descriptor_first}{_separator}{filtered_conversation[0]['value']}{_space}"\
+            f"{_text_descriptor_second}{_separator}"\
+            f"{RESPONSE_PART_TAG}"\
+            f"{filtered_conversation[1]['value']}"
 
     return {"text": text}
 
@@ -244,11 +247,23 @@ def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_argu
         train_dataset=dataset,
         dataset_text_field="text",
         max_seq_length=max_seq_length,
-        data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
+        data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer),
         dataset_num_proc=2,
         packing=False, # Can make training 5x faster for short sequences.
         args=training_arguments
     )
+
+    trainer = train_on_responses_only(
+        trainer,
+        instruction_part=INSTRUCTION_PART_TAG,
+        response_part=RESPONSE_PART_TAG,
+    )
+
+    print("Check masking")
+    print(RESPONSE_PART_TAG, tokenizer.encode(RESPONSE_PART_TAG), [tokenizer.decode(tok) for tok in tokenizer.encode(RESPONSE_PART_TAG)])
+    print("ORIGINAL:", tokenizer.decode(trainer.train_dataset[5]["input_ids"]))
+    space = tokenizer(" ", add_special_tokens = False).input_ids[0]
+    print("MASKED:", tokenizer.decode([space if x == -100 else x for x in trainer.train_dataset[5]["labels"]]))
 
     #Show current memory stats
     gpu_stats = torch.cuda.get_device_properties(0)

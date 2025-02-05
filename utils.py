@@ -13,6 +13,9 @@ from transformers import BatchEncoding
 
 from grammar_definition import apply_prompt_format, flatten
 
+INSTRUCTION_PART_TAG = "<input>"
+RESPONSE_PART_TAG = "<robustness_on>"
+
 openai.api_key = os.getenv("OPENAI_API_KEY")
 PRINT_HIDDEN_STATE = False
 
@@ -869,7 +872,7 @@ def _tokenize_prompts(prompts: List[str], tokenizer) -> BatchEncoding:
     return tokenized_inputs
 
 
-def _tokenize_prompts_with_answers(prompts: List[str], output_classes: List[str], tokenizer) -> BatchEncoding:
+def _tokenize_prompts_with_answers(prompts: List[str], output_classes: List[str], is_lora_finetuned: bool, tokenizer) -> BatchEncoding:
     """
     Example inputs:
         prompt: ["2 + 2 = ? A) 3 B) 4 C) 5", "....", "..."]
@@ -877,7 +880,10 @@ def _tokenize_prompts_with_answers(prompts: List[str], output_classes: List[str]
     """
     if not os.environ.get("DISABLE_CHAT_TEMPLATE") == "1" and tokenizer.chat_template:
         conversations = [
-            [{"role": "user", "content": prompt}, {"role": "assistant", "content": answer}]
+            [
+                {"role": "user", "content": (INSTRUCTION_PART_TAG if is_lora_finetuned else "") + prompt},
+                {"role": "assistant", "content": (RESPONCE_PART_TAG if is_lora_finetuned else "") + answer}
+            ]
             for prompt in prompts for answer in output_classes
         ]
         # [
@@ -903,7 +909,10 @@ def _tokenize_prompts_with_answers(prompts: List[str], output_classes: List[str]
         return tokenized_inputs
 
     # Fallback to naive tokenization if no chat template is defined
-    prompts_with_answers = [p + answer for p in prompts for answer in output_classes]
+    prompts_with_answers = [
+        (INSTRUCTION_PART_TAG if is_lora_finetuned else "") + p + (RESPONCE_PART_TAG if is_lora_finetuned else "") + answer 
+        for p in prompts for answer in output_classes
+    ]
     tokenized_inputs = tokenizer(
         prompts_with_answers,
         return_tensors="pt",
