@@ -6,8 +6,8 @@ suffix=$4                       # e.g. "---iid-no-chat-template"
 finetune_output_dir=$5          # e.g. "llama1b_iid"
 
 ### Setting some variables ###
-# dataset="natural-instructions"
-dataset="data/df_hermes_simple_answers.csv"
+dataset="natural-instructions"
+# dataset="data/df_hermes_simple_answers.csv"
 # Splits by `/` and takes last part (which is model's name)
 model_name=$( echo ${full_huggingface_model_name} | rev | cut -d / -f1 | rev )
 finetuned_model_name=${model_name}_lora
@@ -15,11 +15,7 @@ finetuned_model_name=${model_name}_lora
 num_formats_to_analyze=10
 apply_batch_calibration=0
 
-if [[ ${format_split_mode} == "random" ]]; then
-    path_to_test_formats=train_test_splits/random/holistic_random_sample_task050_nodes_${num_formats_to_analyze}_textdisabled.json
-else
-    path_to_test_formats=""
-fi
+path_to_test_formats=train_test_splits/${format_split_mode}/holistic_random_sample_task050_nodes_${num_formats_to_analyze}_textdisabled.json
 
 ### Setting environment variables ###
 export CUDA_HOME=/usr/local/cuda-12.4
@@ -99,7 +95,7 @@ done
 
 ### Evaluation: trained model ###
 
-for n_shot in 0 2
+for n_shot in 0
 do
     exp_name=${finetuned_model_name}${suffix}-${n_shot}-shot
 
