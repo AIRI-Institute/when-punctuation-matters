@@ -475,7 +475,7 @@ def solve_with_sensitivity_aware(args, dataset, selected_dataset_ids, model, tok
         batch_end_idx = (batch_idx + 1) * args.batch_size_llm
         prompts = input_prompt_string_list[batch_start_idx:batch_end_idx]
         actual_batch_size = len(prompts)
-        inputs = _tokenize_prompts_with_answers(prompts, output_classes, tokenizer) #.to(model.device)
+        inputs = _tokenize_prompts_with_answers(prompts, output_classes, "_lora" in args.model_name, tokenizer) #.to(model.device)
 
         real = None
         synthetic = []
@@ -580,7 +580,7 @@ def solve_with_rank_based_scoring_refactor(args, dataset, selected_dataset_ids, 
         batch_end_idx = (batch_idx + 1) * args.batch_size_llm
         prompts = input_prompt_string_list[batch_start_idx:batch_end_idx]
         actual_batch_size = len(prompts)
-        inputs = _tokenize_prompts_with_answers(prompts, output_classes, tokenizer).to(model.device)
+        inputs = _tokenize_prompts_with_answers(prompts, output_classes, "_lora" in args.model_name, tokenizer).to(model.device)
 
         # inputs.input_ids has shape [batch_size * n_classes, seq_len]
         # print(f"{inputs['input_ids'].shape=}")
@@ -784,7 +784,7 @@ def solve_with_rank_based_scoring_ensembles(args, dataset, input_fields_list, re
             prompts = input_prompt_string_list
             actual_batch_size = len(prompts)
 
-            inputs = _tokenize_prompts_with_answers(prompts, output_classes, tokenizer).to(model.device)
+            inputs = _tokenize_prompts_with_answers(prompts, output_classes, "_lora" in args.model_name, tokenizer).to(model.device)
             # inputs.input_ids has shape [batch_size * n_classes, seq_len]
             # print(f"{inputs['input_ids'].shape=}")
 
@@ -882,7 +882,7 @@ def _tokenize_prompts_with_answers(prompts: List[str], output_classes: List[str]
         conversations = [
             [
                 {"role": "user", "content": (INSTRUCTION_PART_TAG if is_lora_finetuned else "") + prompt},
-                {"role": "assistant", "content": (RESPONCE_PART_TAG if is_lora_finetuned else "") + answer}
+                {"role": "assistant", "content": (RESPONSE_PART_TAG if is_lora_finetuned else "") + answer}
             ]
             for prompt in prompts for answer in output_classes
         ]
@@ -898,7 +898,7 @@ def _tokenize_prompts_with_answers(prompts: List[str], output_classes: List[str]
 
         input_ids = tokenizer.apply_chat_template(
             conversations,
-            add_generation_prompt=False,    # False, since we already have the responce by the assistant hardcoded
+            add_generation_prompt=False,    # False, since we already have the response by the assistant hardcoded
             padding=True,
             tokenizer_kwargs={"pad_to_multiple_of": 8},
             return_tensors="pt",
@@ -910,7 +910,7 @@ def _tokenize_prompts_with_answers(prompts: List[str], output_classes: List[str]
 
     # Fallback to naive tokenization if no chat template is defined
     prompts_with_answers = [
-        (INSTRUCTION_PART_TAG if is_lora_finetuned else "") + p + (RESPONCE_PART_TAG if is_lora_finetuned else "") + answer 
+        (INSTRUCTION_PART_TAG if is_lora_finetuned else "") + p + (RESPONSE_PART_TAG if is_lora_finetuned else "") + answer
         for p in prompts for answer in output_classes
     ]
     tokenized_inputs = tokenizer(
