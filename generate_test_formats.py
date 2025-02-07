@@ -313,7 +313,7 @@ def generate_splits_for_tasks(args, reference_task: str, task_list: List[str]) -
         test_seps = [(e, e) for e in COMPOSITIONAL_TEST_SEPARATOR_LIST]
         mapping = VANILLA_MAPPING_ALL_CATEGORIES | {"chosen_separator": test_seps}
         
-        with open(f"{args.output_dir}/{metadata_filename}", "w") as f:
+        with open(f"{args.output_dir}/{args.mode}/{metadata_filename}", "w") as f:
             print("Test separators:", [e[0] for e in test_seps], file=f)
             
     elif args.mode == "compositional_separator_space":
@@ -324,7 +324,7 @@ def generate_splits_for_tasks(args, reference_task: str, task_list: List[str]) -
             "chosen_space": test_spaces
         }
         
-        with open(f"{args.output_dir}/{metadata_filename}", "w") as f:
+        with open(f"{args.output_dir}/{args.mode}/{metadata_filename}", "w") as f:
             print("Test separators:", [e[0] for e in test_seps], file=f)
             print("Test spaces:", [e[0] for e in test_spaces], file=f)
             
@@ -332,7 +332,7 @@ def generate_splits_for_tasks(args, reference_task: str, task_list: List[str]) -
         test_spaces = [e for e in CHOSEN_SPACE_LIST if e[0] != "\n"]
         mapping = VANILLA_MAPPING_ALL_CATEGORIES | {"chosen_space": test_spaces}
         
-        with open(f"{args.output_dir}/{metadata_filename}", "w") as f:
+        with open(f"{args.output_dir}/{args.mode}/{metadata_filename}", "w") as f:
             print("Test spaces:", [e[0] for e in test_spaces], file=f)
     else:
         raise ValueError(f"{args.mode=} is not supported yet.")
@@ -396,12 +396,43 @@ def generate_splits_for_tasks(args, reference_task: str, task_list: List[str]) -
             "dataset_ordered_ids": task_dataset_ordered_ids,
         }
         
-        task_filepath = os.path.join(args.output_dir,
+        task_filepath = os.path.join(args.output_dir, args.mode,
                                    f'holistic_random_sample_{task}_nodes_{args.num_formats_to_analyze}_textdisabled.json')
         save_json(task_data, task_filepath)
         all_task_data.append(task_data)
     
     return all_task_data
+
+
+def adapt_splits_for_unbalanced(args, task_list: List[str]):
+    if not args.mode == "unbalanced_random":
+        raise NotImplementedError("Unbalanced modes other than 'unbalanced_random' are not supported.")
+
+    random.seed(args.seed)
+
+    for task in task_list:
+        task_args = copy.deepcopy(args)
+        task_args.task_filename = task + "_"
+        source_task_filepath = os.path.join(args.output_dir, "random",
+                                   f'holistic_random_sample_{task}_nodes_{args.num_formats_to_analyze}_textdisabled.json')
+        if not os.path.exists(source_task_filepath):
+            print(source_task_filepath)
+            raise RuntimeError("Can't generate unbalanced splits before corresponding balanced are created, to enforce consistency across samples formats. Please run with 'random' mode first.")
+        task_split = load_json(source_task_filepath)
+
+        task_path = list(Path("../natural-instructions/unbalanced_tasks").glob(f"{task}_*.json"))
+        assert len(task_path) == 1, f"Found more than one file for {task},\n{task_path}"
+        task_path = task_path[0]
+
+        raw_dataset_size = len(load_json(task_path)["Instances"])
+        dataset_ordered_ids = list(range(raw_dataset_size))
+        random.shuffle(dataset_ordered_ids)
+        task_split["dataset_ordered_ids"] = dataset_ordered_ids
+
+        target_task_filepath = os.path.join(args.output_dir, "unbalanced_random",
+                                   f'holistic_random_sample_{task}_nodes_{args.num_formats_to_analyze}_textdisabled.json')
+        save_json(task_split, target_task_filepath)
+
 
 # "task190" is excluded due to incorrect labels
 TASK_NAMES = ["task050", "task065", "task069", "task070", "task114", "task133", "task155", "task158", "task161", "task162", "task163", "task213", "task214", "task220", "task279", "task280", "task286", "task296", "task297", "task316", "task317", "task319", "task320", "task322", "task323", "task325", "task326", "task327", "task328", "task335", "task337", "task385", "task580", "task607", "task608", "task609", "task904", "task905", "task1186", "task1283", "task1284", "task1297", "task1347", "task1387", "task1419", "task1420", "task1421", "task1423", "task1502", "task1612", "task1678", "task1724"]
@@ -418,8 +449,11 @@ if __name__ == "__main__":
     args.disable_text_action_type = True
     args.allow_text_action_type = not args.disable_text_action_type
 
-    reference_task = "task1297_"
-    generate_splits_for_tasks(args, reference_task, TASK_NAMES)
+    if "unbalanced" in args.mode:
+        adapt_splits_for_unbalanced(args, TASK_NAMES)
+    else:
+        reference_task = "task1297_"
+        generate_splits_for_tasks(args, reference_task, TASK_NAMES)
 
     # Coherence check
     dir = Path(args.output_dir) / args.mode

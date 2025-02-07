@@ -2,10 +2,16 @@ mkdir train_test_splits
 
 for n_formats in 10 50
 do
-    for mode in random compositional_separator_space compositional_separator unseen_space
+    for mode in random compositional_separator_space compositional_separator unseen_space unbalanced_random
     do
-        output_dir=train_test_splits/${mode}
-        mkdir ${output_dir}
+        output_dir=train_test_splits
+
+        if [[ -d ${output_dir}/${mode} ]]; then
+            echo "${output_dir}/${mode} exists, skipping generation"
+            continue
+        fi
+
+        mkdir ${output_dir}/${mode}
 
         python generate_test_formats.py \
             --task_filename DUMMY_VALUE \
