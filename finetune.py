@@ -232,6 +232,8 @@ def custom_tokenizer(examples, instructions_pattern, response_pattern, tokenizer
     )
 
     return {
+        "text": examples["text"],
+        "input_ids": clean_encodings["input_ids"],  # just for Trainer compatibility
         "input_ids_c": clean_encodings["input_ids"],
         "labels_c": clean_encodings["labels"],
         "attention_mask_c": clean_encodings["attention_mask"],
@@ -375,14 +377,13 @@ def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_argu
             response_part=RESPONSE_PART_TAG,
         )
     else: 
-
-        dataset = custom_tokenizer(
-            prepare_dataset(dataset), INSTRUCTION_PART_TAG, RESPONSE_PART_TAG, tokenizer, max_seq_length
-            )
         
-        training_arguments = TrainingArguments(
-            **training_arguments.to_dict(), 
-            remove_unused_columns=False
+        prepared_dataset = prepare_dataset(dataset)
+        
+        dataset = prepared_dataset.map(
+            lambda x: custom_tokenizer(x, INSTRUCTION_PART_TAG, RESPONSE_PART_TAG, tokenizer, max_seq_length),
+            batched=True,
+            num_proc=4
             )
         
         trainer = CustomSFTTrainer(
@@ -515,6 +516,10 @@ if __name__ == "__main__":
         path_to_test_formats=args.path_to_test_formats,
         start_idx=args.start_idx
     )
+    if args.loss_type == "consistency": 
+        remove_unused_columns = True
+    else: 
+        remove_unused_columns = False
 
     training_arguments = TrainingArguments(
         per_device_train_batch_size=args.batch_size,
@@ -534,6 +539,7 @@ if __name__ == "__main__":
         report_to="none", # Use this for WandB etc
         save_total_limit=3,
         save_steps=100,
+        remove_unused_columns=remove_unused_columns
     )
     
 
