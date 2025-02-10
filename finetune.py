@@ -1,6 +1,7 @@
 import ast
 import json
 import torch
+import torch.nn.functional as F
 import random
 import pandas as pd
 from pathlib import Path
@@ -12,7 +13,7 @@ from datasets import load_dataset, Dataset
 from trl import SFTTrainer
 from unsloth import FastLanguageModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template, standardize_sharegpt, train_on_responses_only
-from transformers import TrainingArguments, DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
+from transformers import TrainingArguments, DataCollatorForSeq2Seq, DataCollatorForLanguageModeling, DefaultDataCollator
 
 from generate_test_formats import (
     VANILLA_MAPPING_ALL_CATEGORIES,
@@ -192,6 +193,55 @@ def get_dataset(dataset_name: str, n_samples: int, n_augmentations: int, format_
     return final_dataset
 
 
+def prepare_dataset(dataset): 
+    clean = [x for x in dataset['text'][::2]]
+    perturb = [x for x in dataset['text'][1::2]]
+
+    return Dataset.from_dict(
+        {
+            "text": clean, 
+            "perturbed_text": perturb
+        }
+    )
+
+def custom_tokenizer(examples, instructions_pattern, response_pattern, tokenizer, max_length):
+
+    texts_c = [x.split(response_pattern)[0].replace(instructions_pattern, '') for x in examples["text"]]
+    labels_c = [x.split(response_pattern)[1] for x in examples["text"]]
+
+    texts_p = [x.split(response_pattern)[0].replace(instructions_pattern, '') for x in examples["perturbed_text"]]
+    labels_p = [x.split(response_pattern)[1] for x in examples["perturbed_text"]]
+
+
+    clean_encodings = tokenizer(
+        text = texts_c,
+        text_target = labels_c,
+        padding='max_length',
+        truncation=True,
+        return_tensors="pt",
+        max_length=max_length
+    )
+
+    perturb_encodings = tokenizer(
+        text=texts_p,
+        text_target=labels_p,
+        padding='max_length',
+        truncation=True,
+        return_tensors="pt",
+        max_length=max_length
+    )
+
+    return {
+        "input_ids_c": clean_encodings["input_ids"],
+        "labels_c": clean_encodings["labels"],
+        "attention_mask_c": clean_encodings["attention_mask"],
+        "input_ids_p": perturb_encodings["input_ids"],
+        "labels_p": perturb_encodings["labels"],
+        "attention_mask_p": perturb_encodings["attention_mask"]
+
+    }
+
+
 @dataclass
 class LoraArguments:
     target_modules: Tuple
@@ -212,10 +262,75 @@ class DatasetArguments:
     format_split_mode: str
     path_to_test_formats: str
     start_idx: int
+    
+# custom class for JS-loss
+class CustomSFTTrainer(SFTTrainer):
 
+    def __init__(self, *args, loss_type='default', **kwargs):
+        """
+        Added the additional property 'loss_type' during initialization.
+        """
+        super().__init__(*args, **kwargs)
+        self.loss_type = loss_type
+
+        if self.loss_type == 'consistency':
+                self.compute_loss = self._compute_loss_consistency
+
+
+    def _kl_divergence(self, p, q):
+
+        return torch.sum(p * (torch.log(p + 1e-8) - torch.log(q + 1e-8)), dim=-1)
+
+    def _jensen_shannon_divergence(self, p, q):
+
+        m = 0.5 * (p + q)
+        return 0.5 * (self._kl_divergence(p, m) + self._kl_divergence(q, m))
+
+    def _perturbation_consistency_loss(self, y_c, y_p, attention_mask_c, attention_mask_p):
+
+        y_c_avg = (y_c * attention_mask_c.unsqueeze(-1)).sum(dim=1) / (attention_mask_c.sum(dim=1, keepdim=True) + 1e-8)
+        y_p_avg = (y_p * attention_mask_p.unsqueeze(-1)).sum(dim=1) / (attention_mask_p.sum(dim=1, keepdim=True) + 1e-8)
+
+        loss_js = self._jensen_shannon_divergence(y_c_avg, y_p_avg).mean()
+
+        return loss_js
+
+    def _compute_loss_consistency(self, model, inputs, *args, lambdas=[0.33, 0.33, 0.33], **kwargs):
+        """
+        Custom loss function integrating Cross-Entropy Loss & JS Loss.
+        """
+
+        pad_index = self.tokenizer.pad_token_id
+
+        input_ids_c = inputs["input_ids_c"]
+        labels_c = inputs["labels_c"]
+        attention_mask_c = inputs["attention_mask_c"]
+
+        input_ids_p = inputs["input_ids_p"]
+        labels_p = inputs["labels_p"]
+        attention_mask_p = inputs["attention_mask_p"]
+
+
+        outputs_c = model(input_ids=input_ids_c, attention_mask=attention_mask_c)
+        logits_c = outputs_c.logits
+
+        outputs_p = model(input_ids=input_ids_p, attention_mask=attention_mask_p)
+        logits_p = outputs_p.logits
+
+        lc = F.cross_entropy(logits_c.view(-1, logits_c.shape[-1]), labels_c.view(-1), ignore_index=pad_index, reduction='mean')
+        lp = F.cross_entropy(logits_p.view(-1, logits_p.shape[-1]), labels_p.view(-1), ignore_index=pad_index, reduction='mean')
+
+        y_c_prob = F.softmax(logits_c, dim=-1)
+        y_p_prob = F.softmax(logits_p, dim=-1)
+
+        l_js = self._perturbation_consistency_loss(y_c_prob, y_p_prob, attention_mask_c, attention_mask_p)
+        total_loss = lambdas[0] * lc + lambdas[1] * lp + lambdas[2] * l_js
+        print(total_loss)
+
+        return total_loss
 
 def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_arguments: TrainingArguments, dataset_arguments: DatasetArguments,
-                   seed: int, max_seq_length: int, dtype: torch.dtype, load_in_4bit: bool, device: str, output_dir: str):
+                   seed: int, max_seq_length: int, dtype: torch.dtype, load_in_4bit: bool, device: str, output_dir: str, loss_type: str):
     model, tokenizer = load_model(model_name, max_seq_length, dtype, load_in_4bit, device)
 
     model = FastLanguageModel.get_peft_model(
@@ -240,24 +355,46 @@ def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_argu
         dataset_arguments.path_to_test_formats,
         dataset_arguments.start_idx,
     )
+    if loss_type != 'consistency':
 
-    trainer = SFTTrainer(
-        model=model,
-        tokenizer=tokenizer,
-        train_dataset=dataset,
-        dataset_text_field="text",
-        max_seq_length=max_seq_length,
-        data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer),
-        dataset_num_proc=2,
-        packing=False, # Can make training 5x faster for short sequences.
-        args=training_arguments
-    )
+        trainer = SFTTrainer(
+            model=model,
+            tokenizer=tokenizer,
+            train_dataset=dataset,
+            dataset_text_field="text",
+            max_seq_length=max_seq_length,
+            data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer),
+            dataset_num_proc=2,
+            packing=False, # Can make training 5x faster for short sequences.
+            args=training_arguments
+        )
 
-    trainer = train_on_responses_only(
-        trainer,
-        instruction_part=INSTRUCTION_PART_TAG,
-        response_part=RESPONSE_PART_TAG,
-    )
+        trainer = train_on_responses_only(
+            trainer,
+            instruction_part=INSTRUCTION_PART_TAG,
+            response_part=RESPONSE_PART_TAG,
+        )
+    else: 
+
+        dataset = custom_tokenizer(
+            prepare_dataset(dataset), INSTRUCTION_PART_TAG, RESPONSE_PART_TAG, tokenizer, max_seq_length
+            )
+        
+        training_arguments = TrainingArguments(
+            **training_arguments.to_dict(), 
+            remove_unused_columns=False
+            )
+        
+        trainer = CustomSFTTrainer(
+            model=model,
+            tokenizer=tokenizer,
+            train_dataset=dataset,
+            max_seq_length=max_seq_length,
+            data_collator=DefaultDataCollator(),
+            packing=False, # Can make training 5x faster for short sequences.
+            args=training_arguments, 
+            loss_type=loss_type
+        )
 
     print("Check masking")
     print(RESPONSE_PART_TAG, tokenizer.encode(RESPONSE_PART_TAG), [tokenizer.decode(tok) for tok in tokenizer.encode(RESPONSE_PART_TAG)])
@@ -347,6 +484,7 @@ def make_parser():
     parser.add_argument("--logging-steps", type=int, default=10)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("-o", "--output-dir", type=str, required=True)
+    parser.add_argument("--loss_type", type=str, default='default')
 
     return parser
 
@@ -397,8 +535,9 @@ if __name__ == "__main__":
         save_total_limit=3,
         save_steps=100,
     )
+    
 
     model, tokenizer = run_finetuning(args.model_name, lora_arguments, training_arguments, dataset_arguments, args.seed,
-                                      args.max_seq_length, dtype, args.load_in_4bit, args.device, args.output_dir)
+                                      args.max_seq_length, dtype, args.load_in_4bit, args.device, args.output_dir, args.loss_type)
 
     sample_inference(model, tokenizer)
