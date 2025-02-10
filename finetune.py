@@ -327,7 +327,6 @@ class CustomSFTTrainer(SFTTrainer):
         Custom loss function integrating Cross-Entropy Loss & JS Loss.
         
         """
-        print(inputs["input_ids_c"].shape)
 
         pad_index = self.tokenizer.pad_token_id
 
