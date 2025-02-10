@@ -7,13 +7,15 @@ import pandas as pd
 from pathlib import Path
 from argparse import ArgumentParser
 from dataclasses import dataclass
-from typing import Optional, Tuple, Set, Dict, List
+from typing import Optional, Tuple, Set, Dict, List, Any
 from tqdm.auto import tqdm
 from datasets import load_dataset, Dataset
 from trl import SFTTrainer
 from unsloth import FastLanguageModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template, standardize_sharegpt, train_on_responses_only
-from transformers import TrainingArguments, DataCollatorForSeq2Seq, DataCollatorForLanguageModeling, DefaultDataCollator
+from transformers import TrainingArguments, DataCollatorForSeq2Seq
+from transformers.data.data_collator import DataCollatorMixin
+
 
 from generate_test_formats import (
     VANILLA_MAPPING_ALL_CATEGORIES,
@@ -232,8 +234,6 @@ def custom_tokenizer(examples, instructions_pattern, response_pattern, tokenizer
     )
 
     return {
-        "text": examples["text"],
-        "input_ids": clean_encodings["input_ids"],  # just for Trainer compatibility
         "input_ids_c": clean_encodings["input_ids"],
         "labels_c": clean_encodings["labels"],
         "attention_mask_c": clean_encodings["attention_mask"],
@@ -264,6 +264,31 @@ class DatasetArguments:
     format_split_mode: str
     path_to_test_formats: str
     start_idx: int
+    
+    
+class CustomDataCollator(DataCollatorMixin):
+    """
+    Custom Data Collator to prepare batched inputs required for consistency loss computation.
+    """
+
+    return_tensors: str = "pt"
+
+    def __call__(self, features: List[Dict[str, Any]], return_tensors=None) -> Dict[str, Any]:
+        if return_tensors is None:
+            return_tensors = self.return_tensors
+
+        # Separate perturbed and clean examples
+        batch = {
+            "input_ids_c": torch.stack([torch.tensor(f["input_ids_c"]) for f in features]),
+            "labels_c": torch.stack([torch.tensor(f["labels_c"]) for f in features]),
+            "attention_mask_c": torch.stack([torch.tensor(f["attention_mask_c"]) for f in features]),
+
+            "input_ids_p": torch.stack([torch.tensor(f["input_ids_p"]) for f in features]),
+            "labels_p": torch.stack([torch.tensor(f["labels_p"]) for f in features]),
+            "attention_mask_p": torch.stack([torch.tensor(f["attention_mask_p"]) for f in features]),
+        }
+
+        return batch
     
 # custom class for JS-loss
 class CustomSFTTrainer(SFTTrainer):
@@ -376,6 +401,13 @@ def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_argu
             instruction_part=INSTRUCTION_PART_TAG,
             response_part=RESPONSE_PART_TAG,
         )
+        
+        print("Check masking")
+        print(RESPONSE_PART_TAG, tokenizer.encode(RESPONSE_PART_TAG), [tokenizer.decode(tok) for tok in tokenizer.encode(RESPONSE_PART_TAG)])
+        print("ORIGINAL:", tokenizer.decode(trainer.train_dataset[5]["input_ids"]))
+        space = tokenizer(" ", add_special_tokens = False).input_ids[0]
+        print("MASKED:", tokenizer.decode([space if x == -100 else x for x in trainer.train_dataset[5]["labels"]]))
+        
     else: 
         
         prepared_dataset = prepare_dataset(dataset)
@@ -388,20 +420,12 @@ def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_argu
         
         trainer = CustomSFTTrainer(
             model=model,
-            tokenizer=tokenizer,
             train_dataset=dataset,
-            max_seq_length=max_seq_length,
-            data_collator=DefaultDataCollator(),
-            packing=False, # Can make training 5x faster for short sequences.
+            data_collator=CustomDataCollator(),
             args=training_arguments, 
             loss_type=loss_type
         )
 
-    print("Check masking")
-    print(RESPONSE_PART_TAG, tokenizer.encode(RESPONSE_PART_TAG), [tokenizer.decode(tok) for tok in tokenizer.encode(RESPONSE_PART_TAG)])
-    print("ORIGINAL:", tokenizer.decode(trainer.train_dataset[5]["input_ids"]))
-    space = tokenizer(" ", add_special_tokens = False).input_ids[0]
-    print("MASKED:", tokenizer.decode([space if x == -100 else x for x in trainer.train_dataset[5]["labels"]]))
 
     #Show current memory stats
     gpu_stats = torch.cuda.get_device_properties(0)
@@ -517,9 +541,9 @@ if __name__ == "__main__":
         start_idx=args.start_idx
     )
     if args.loss_type == "consistency": 
-        remove_unused_columns = True
-    else: 
         remove_unused_columns = False
+    else: 
+        remove_unused_columns = True
 
     training_arguments = TrainingArguments(
         per_device_train_batch_size=args.batch_size,
