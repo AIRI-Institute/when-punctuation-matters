@@ -325,7 +325,9 @@ class CustomSFTTrainer(SFTTrainer):
     def _compute_loss_consistency(self, model, inputs, *args, lambdas=[0.33, 0.33, 0.33], **kwargs):
         """
         Custom loss function integrating Cross-Entropy Loss & JS Loss.
+        
         """
+        print(inputs["input_ids_c"].shape)
 
         pad_index = self.tokenizer.pad_token_id
 
@@ -352,7 +354,11 @@ class CustomSFTTrainer(SFTTrainer):
 
         l_js = self._perturbation_consistency_loss(y_c_prob, y_p_prob, attention_mask_c, attention_mask_p)
         total_loss = lambdas[0] * lc + lambdas[1] * lp + lambdas[2] * l_js
-        print(total_loss)
+        
+        # Free memory explicitly
+        del input_ids_c, labels_c, attention_mask_c
+        del input_ids_p, labels_p, attention_mask_p
+        torch.cuda.empty_cache()
 
         return total_loss
 
