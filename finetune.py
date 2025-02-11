@@ -264,28 +264,52 @@ class DatasetArguments:
     format_split_mode: str
     path_to_test_formats: str
     start_idx: int
-    
-    
+
+
 class CustomDataCollator(DataCollatorMixin):
     """
     Custom Data Collator to prepare batched inputs required for consistency loss computation.
     """
 
-    return_tensors: str = "pt"
+    def __init__(self, *args, tokenizer, **kwargs): 
+        self.tokenizer = tokenizer
 
-    def __call__(self, features: List[Dict[str, Any]], return_tensors=None) -> Dict[str, Any]:
-        if return_tensors is None:
-            return_tensors = self.return_tensors
+    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+                
+        input_ids_c = [torch.tensor(f["input_ids_c"]) for f in features]
+        labels_c = [torch.tensor(f["labels_c"]) for f in features]
+        attention_mask_c = [torch.tensor(f["attention_mask_c"]) for f in features]
 
-        # Separate perturbed and clean examples
+        input_ids_p = [torch.tensor(f["input_ids_p"]) for f in features]
+        labels_p = [torch.tensor(f["labels_p"]) for f in features]
+        attention_mask_p = [torch.tensor(f["attention_mask_p"]) for f in features]
+
+
+        def mask_non_predicted(labels, input_ids):
+            
+            masked_labels = labels.clone()
+            for i in range(len(labels)):
+                predicted_indices = (labels[i] != self.tokenizer.pad_token_id).nonzero(as_tuple=True)[0]
+
+                if len(predicted_indices) > 0:
+                    first_predicted_idx = predicted_indices[0]
+                    masked_labels[i, :first_predicted_idx] = -100  # set all content before the predicted part eq -100
+                else:
+                    masked_labels[i, :] = -100  
+
+            return masked_labels
+        
+        labels_c = mask_non_predicted(torch.stack(labels_c), torch.stack(input_ids_c))
+        labels_p = mask_non_predicted(torch.stack(labels_p), torch.stack(input_ids_p))
+
         batch = {
-            "input_ids_c": torch.stack([torch.tensor(f["input_ids_c"]) for f in features]),
-            "labels_c": torch.stack([torch.tensor(f["labels_c"]) for f in features]),
-            "attention_mask_c": torch.stack([torch.tensor(f["attention_mask_c"]) for f in features]),
+            "input_ids_c": torch.stack(input_ids_c),
+            "labels_c": labels_c,
+            "attention_mask_c": torch.stack(attention_mask_c),
 
-            "input_ids_p": torch.stack([torch.tensor(f["input_ids_p"]) for f in features]),
-            "labels_p": torch.stack([torch.tensor(f["labels_p"]) for f in features]),
-            "attention_mask_p": torch.stack([torch.tensor(f["attention_mask_p"]) for f in features]),
+            "input_ids_p": torch.stack(input_ids_p),
+            "labels_p": labels_p,
+            "attention_mask_p": torch.stack(attention_mask_p)
         }
 
         return batch
@@ -293,7 +317,7 @@ class CustomDataCollator(DataCollatorMixin):
 # custom class for JS-loss
 class CustomSFTTrainer(SFTTrainer):
 
-    def __init__(self, *args, loss_type='default', **kwargs):
+    def __init__(self, *args, loss_type='consistency', **kwargs):
         """
         Added the additional property 'loss_type' during initialization.
         """
@@ -306,30 +330,26 @@ class CustomSFTTrainer(SFTTrainer):
 
     def _kl_divergence(self, p, q):
 
-        return torch.sum(p * (torch.log(p + 1e-8) - torch.log(q + 1e-8)), dim=-1)
+        return F.kl_div(p.log(), q, reduction='batchmean') 
 
     def _jensen_shannon_divergence(self, p, q):
-
-        m = 0.5 * (p + q)
+        m = 0.5 * (p + q)  
         return 0.5 * (self._kl_divergence(p, m) + self._kl_divergence(q, m))
+    
 
-    def _perturbation_consistency_loss(self, y_c, y_p, attention_mask_c, attention_mask_p):
+    def _perturbation_consistency_loss(self, y_c, y_p):
+ 
+        y_c_avg = (y_c * (y_c != 0)).sum(dim=1) / (y_c != 0).sum(dim=1)
+        y_p_avg = (y_p * (y_p != 0)).sum(dim=1) / (y_p != 0).sum(dim=1)
 
-        y_c_avg = (y_c * attention_mask_c.unsqueeze(-1)).sum(dim=1) / (attention_mask_c.sum(dim=1, keepdim=True) + 1e-8)
-        y_p_avg = (y_p * attention_mask_p.unsqueeze(-1)).sum(dim=1) / (attention_mask_p.sum(dim=1, keepdim=True) + 1e-8)
+        # y_c_avg = y_c.mean(dim=1)
+        # y_p_avg = y_p.mean(dim=1)
 
         loss_js = self._jensen_shannon_divergence(y_c_avg, y_p_avg).mean()
-
         return loss_js
 
-    def _compute_loss_consistency(self, model, inputs, *args, lambdas=[0.33, 0.33, 0.33], **kwargs):
-        """
-        Custom loss function integrating Cross-Entropy Loss & JS Loss.
-        
-        """
-
-        pad_index = self.tokenizer.pad_token_id
-
+    def _compute_loss_consistency(self, model, inputs, *args, beta=1, **kwargs):
+   
         input_ids_c = inputs["input_ids_c"]
         labels_c = inputs["labels_c"]
         attention_mask_c = inputs["attention_mask_c"]
@@ -338,28 +358,42 @@ class CustomSFTTrainer(SFTTrainer):
         labels_p = inputs["labels_p"]
         attention_mask_p = inputs["attention_mask_p"]
 
-
         outputs_c = model(input_ids=input_ids_c, attention_mask=attention_mask_c)
         logits_c = outputs_c.logits
 
         outputs_p = model(input_ids=input_ids_p, attention_mask=attention_mask_p)
         logits_p = outputs_p.logits
 
-        lc = F.cross_entropy(logits_c.view(-1, logits_c.shape[-1]), labels_c.view(-1), ignore_index=pad_index, reduction='mean')
-        lp = F.cross_entropy(logits_p.view(-1, logits_p.shape[-1]), labels_p.view(-1), ignore_index=pad_index, reduction='mean')
+        loss_mask_c = (labels_c != -100)  
+        loss_mask_p = (labels_p != -100)
+
+        lc = F.cross_entropy(
+            logits_c.view(-1, logits_c.shape[-1]),
+            labels_c.view(-1),
+            ignore_index=-100, 
+            reduction="mean"
+        )
+
+        lp = F.cross_entropy(
+            logits_p.view(-1, logits_p.shape[-1]),
+            labels_p.view(-1),
+            ignore_index=-100,
+            reduction="mean"
+        )
 
         y_c_prob = F.softmax(logits_c, dim=-1)
         y_p_prob = F.softmax(logits_p, dim=-1)
 
-        l_js = self._perturbation_consistency_loss(y_c_prob, y_p_prob, attention_mask_c, attention_mask_p)
-        total_loss = lambdas[0] * lc + lambdas[1] * lp + lambdas[2] * l_js
-        
-        # Free memory explicitly
-        del input_ids_c, labels_c, attention_mask_c
-        del input_ids_p, labels_p, attention_mask_p
-        torch.cuda.empty_cache()
+        l_js = self._perturbation_consistency_loss(
+            y_c_prob * loss_mask_c.unsqueeze(-1),  
+            y_p_prob * loss_mask_p.unsqueeze(-1)
+        )
+
+        total_loss = lc + lp + beta * l_js
+        print(f'lc:{lc}, lp:{lp}, l_js:{l_js}')
 
         return total_loss
+
 
 def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_arguments: TrainingArguments, dataset_arguments: DatasetArguments,
                    seed: int, max_seq_length: int, dtype: torch.dtype, load_in_4bit: bool, device: str, output_dir: str, loss_type: str):
@@ -426,7 +460,7 @@ def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_argu
         trainer = CustomSFTTrainer(
             model=model,
             train_dataset=dataset,
-            data_collator=CustomDataCollator(),
+            data_collator=CustomDataCollator(tokenizer=tokenizer),
             args=training_arguments, 
             loss_type=loss_type
         )
