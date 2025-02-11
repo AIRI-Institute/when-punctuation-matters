@@ -11,8 +11,8 @@ from math import sqrt, ceil
 from statistics import median, stdev
 from argparse import ArgumentParser
 
-sns.set_theme(font="monospace")
-
+# sns.set_theme(font="monospace", font_scale=1.5)
+sns.set_theme(font_scale=1.5)
 
 def read_json(path: str) -> Dict:
     with open(path, "r") as f:
@@ -121,16 +121,17 @@ if __name__ == "__main__":
     experiment_names = [name for name in experiment_names if 
         not "zeroshot" in name and 
         not "test" in name and 
-        not "ensemble" in name and 
+        # not "ensemble" in name and 
         not "debug" in name and 
         not "batch-calibration-probs" in name and 
-        not "sensitivity-aware-deconding" in name and
+        # not "sensitivity-aware-decoding" in name and
         not "rank1" in name and
         # not "batch-calibration" in name and
         not "default" in name and
         not "augs" in name and
         not "exact-match" in name and
-        not "compositional" in name
+        "compositional" in name and
+        not "unbalanced" in name
         # not "1ksteps" in name and
         # not "superclear" in name and
         # not "iid" in name and
@@ -140,10 +141,9 @@ if __name__ == "__main__":
     experiment_names = [name for name in experiment_names if ("2-shot" in name and "lora" not in name) or ("0-shot" in name and "lora" in name)]
     experiment_names = [name for name in experiment_names if "no-chat-template" in name]
     experiment_names = [name for name in experiment_names if ("instruct" in name.lower() or "it" in name)]
-    # experiment_names = [name for name in experiment_names if "Llama-3.2-3B" in name]
-    # experiment_names = [name for name in experiment_names if "Llama-3.2-3B" in name or "Qwen2.5-3B" in name or "gemma-2-2b" in name]
-    experiment_names = [name for name in experiment_names if "Llama-3.1-8B" in name or "Qwen2.5-7B" in name or "gemma-2-9b" in name]
-    experiment_names = [name for name in experiment_names if ("lora" not in name) or ("lora" in name and "iid" in name)]
+    experiment_names = [name for name in experiment_names if "Llama-3.2" in name or "Qwen2.5" in name or "gemma-2" in name]
+    # experiment_names = [name for name in experiment_names if "Llama-3.1-8B" in name or "Qwen2.5-7B" in name or "gemma-2-9b" in name]
+    # experiment_names = [name for name in experiment_names if ("lora" not in name) or ("lora" in name and "iid" in name)]
 
     for n in experiment_names:
         print("\t", n)
@@ -162,13 +162,30 @@ if __name__ == "__main__":
         df = collect_spreads(evaluated_tasks_result_paths)
 
         tail = tail.replace("no-chat-template-", "")
+        tail = tail.replace("compositional-separator-space-", "")
+        tail = tail.replace("compositional-", "")
+
+
         if "lora" in model_name:
-            tail = tail.replace("iidx2", "in-domain-LoRA")
+            tail = tail.replace("0-shot", "")
+            tail = tail.replace("response-only-", "")
+            tail = tail.replace("iidx2", "")
+            tail = tail.replace("iid", "-ood")
+            tail = "LoRA" + tail 
             model_name = model_name[:-len("_lora")]
         else:
+            tail = tail.replace("2-shot", "")
+            tail = tail.replace("iid-split-", "")
             tail = tail.replace("iidx2-", "")
+            tail = tail.replace("iid", "")
+            tail = tail.replace("batch-calibration-", "BC")
+            tail = tail.replace("sensitivity-aware-decoding-", "SAD")
+            tail = tail.replace("template-ensembles-", "TE")
+            if tail == "" or tail == "-":
+                tail = "FS"
 
         df["experiment"] = f"{model_name:>30}{tail:>40}"
+        df["method"] = tail
         df["model"] = model_name
 
         df.to_csv(subdir / "spreads.csv")
@@ -177,62 +194,123 @@ if __name__ == "__main__":
     
     total_df = pd.concat(total_df)
 
-    unique_models = total_df["model"].unique()
+    all_methods = ["FS", "BC", "SAD", "TE", "LoRA", "LoRA-ood", "LoRA-JS"]
 
-    model2color = dict(zip(unique_models, sns.color_palette("colorblind")))
+    # unique_methods = total_df["method"].unique()
+    # ordered_methods = [m for m in all_methods if m in unique_methods]
+    # print(ordered_methods)
+    method2color = dict(zip(all_methods, sns.color_palette("Set2")))
 
-    for model in unique_models:
-        subset = total_df[total_df["model"] == model]
+    total_df["method"] = pd.Categorical(total_df["method"], categories=all_methods)
+    total_df.sort_values("method")
+    total_df["method"] = total_df["method"].cat.remove_unused_categories()
 
-        plt.figure(figsize=(12, 8))
-        # sns.barplot(data=subset, x="spread", y="experiment", errorbar=("pi", 90), color=model2color[model], legend=False)
-        sns.boxplot(data=subset, x="spread", y="experiment", color=model2color[model], legend=False)
-        plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
-        plt.ylabel("")
-        plt.title(f"Spread across prompt formats\niid split")
-        # plt.savefig(f"{args.image_dir}/barplot_{model}.png", dpi=350, bbox_inches="tight")
-        plt.savefig(f"{args.image_dir}/boxplot_{model}.png", dpi=350, bbox_inches="tight")
-        plt.close()
+    default_figsize = (17, 5)
 
-        plt.figure(figsize=(12, 8))
-        sns.boxplot(data=subset, x="std", y="experiment", color=model2color[model], legend=False)
-        plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
-        plt.ylabel("")
-        plt.title(f"Standard deviation of accuracy across prompt formats\niid split")
-        plt.savefig(f"{args.image_dir}/std_boxplot_{model}.png", dpi=350, bbox_inches="tight")
-        plt.close()
+# Clustered barplot of accuracy with errorbars
+    plt.figure(figsize=default_figsize)
+    ax = sns.barplot(data=total_df, x="model", y="median_accuracy", hue="method", errorbar=None, palette=method2color)
+    plt.xticks(rotation=15, ha="right")
 
-        plt.figure(figsize=(12, 8))
-        sns.boxplot(data=subset, x="median_accuracy", y="experiment", color=model2color[model], legend=False)
-        plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
-        plt.ylabel("")
-        plt.title(f"Median accuracy across prompt formats\niid split")
-        plt.savefig(f"{args.image_dir}/median_accuracy_boxplot_{model}.png", dpi=350, bbox_inches="tight")
-        plt.close()
+    mean_stds = total_df.groupby(["model", "method"], observed=True)["std"].mean()
+    for p, mean_std in zip(ax.patches, mean_stds):
+        x = p.get_x()
+        w = p.get_width()
+        h = p.get_height()
+        plt.errorbar(x + w / 2, h, yerr=2 * mean_std, fmt="none", linewidth=2, color="black", capsize=4)
 
-        # plt.figure(figsize=(12, 8))
-        # sns.boxplot(data=subset, x="mean_drop", y="experiment", color=model2color[model], whis=(5, 95), legend=False)
-        # plt.xlabel(f"Whiskers denote 5th and 95th percentiles\n{N_SELECTED_TASKS} tasks from Natural Instructions")
-        # plt.ylabel("")
-        # plt.title(f"Mean performance change across prompt formats compared to default format\niid split")
-        # plt.savefig(f"{args.image_dir}/mean_drop_boxplot_{model}.png", dpi=350, bbox_inches="tight")
-        # plt.close()
-
-    plt.figure(figsize=(12, 8))
-    sns.boxplot(data=total_df, x="spread", y="experiment", hue="model", palette=model2color, legend=False)
-    plt.xlabel(f"Spread across prompt formats\n{N_SELECTED_TASKS} tasks from Natural Instructions")
-    plt.ylabel("")
-    plt.title("Spread across prompt formats\niid split")
-    plt.savefig(f"{args.image_dir}/all_boxplot.png", dpi=350, bbox_inches="tight")
+    plt.xlabel("")
+    plt.ylabel("Accuracy", labelpad=25)
+    plt.title("Methods' performance on different models")
+    sns.move_legend(ax, "center left", bbox_to_anchor=(1.0, 0.5), ncol=1, title="Method")
+    plt.savefig(f"{args.image_dir}/clustered_barplot.png", dpi=350, bbox_inches="tight")
     plt.close()
 
-    plt.figure(figsize=(12, 8))
-    sns.boxplot(data=total_df, x="spread", y="experiment", hue="model", palette=model2color, legend=False)
-    plt.xlabel(f"Standard deviation of accuracy across prompt formats\n{N_SELECTED_TASKS} tasks from Natural Instructions")
-    plt.ylabel("")
-    plt.title("Standard deviation of accuracy across prompt formats\niid split")
-    plt.savefig(f"{args.image_dir}/std_all_boxplot.png", dpi=350, bbox_inches="tight")
+# Std
+    plt.figure(figsize=default_figsize)
+    ax = sns.barplot(data=total_df, x="model", y="std", hue="method", errorbar=None, palette=method2color)
+    plt.xticks(rotation=15, ha="right")
+    plt.xlabel("")
+    plt.ylabel("Standard deviation over prompts", labelpad=25)
+    plt.title("Methods' standard deviation over prompts on different models\n(lower is better)")
+    sns.move_legend(ax, "center left", bbox_to_anchor=(1.0, 0.5), ncol=1, title="Method")
+    plt.savefig(f"{args.image_dir}/clustered_std_barplot.png", dpi=350, bbox_inches="tight")
     plt.close()
+
+# Spread
+    plt.figure(figsize=default_figsize)
+    ax = sns.barplot(data=total_df, x="model", y="spread", hue="method", errorbar=None, palette=method2color)
+    plt.xticks(rotation=15, ha="right")
+    plt.xlabel("")
+    plt.ylabel("Spread over prompts", labelpad=25)
+    plt.title("Methods' spread over prompts on different models\n(lower is better)")
+    sns.move_legend(ax, "center left", bbox_to_anchor=(1.0, 0.5), ncol=1, title="Method")
+    plt.savefig(f"{args.image_dir}/clustered_spread_barplot.png", dpi=350, bbox_inches="tight")
+    plt.close()
+
+    # plt.figure(figsize=(12, 8))
+    # sns.boxplot(data=total_df, x="mean_drop", y="experiment", hue="model", whis=(5, 95), palette=model2color, legend=False)
+    # plt.xlabel(f"Whiskers denote 5th and 95th percentiles\n{N_SELECTED_TASKS} tasks from Natural Instructions")
+    # plt.ylabel("")
+    # plt.title("Mean performance change across prompt formats compared to default format\niid split")
+    # plt.savefig(f"{args.image_dir}/mean_drop_boxplot.png", dpi=350, bbox_inches="tight")
+    # plt.close()
+
+    # unique_models = total_df["model"].unique()
+    # model2color = dict(zip(unique_models, sns.color_palette("colorblind")))
+
+    # for model in unique_models:
+    #     subset = total_df[total_df["model"] == model]
+
+    #     plt.figure(figsize=(12, 8))
+    #     # sns.barplot(data=subset, x="spread", y="experiment", errorbar=("pi", 90), color=model2color[model], legend=False)
+    #     sns.boxplot(data=subset, x="spread", y="experiment", color=model2color[model], legend=False)
+    #     plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
+    #     plt.ylabel("")
+    #     plt.title(f"Spread across prompt formats\niid split")
+    #     # plt.savefig(f"{args.image_dir}/barplot_{model}.png", dpi=350, bbox_inches="tight")
+    #     plt.savefig(f"{args.image_dir}/boxplot_{model}.png", dpi=350, bbox_inches="tight")
+    #     plt.close()
+
+    #     plt.figure(figsize=(12, 8))
+    #     sns.boxplot(data=subset, x="std", y="experiment", color=model2color[model], legend=False)
+    #     plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
+    #     plt.ylabel("")
+    #     plt.title(f"Standard deviation of accuracy across prompt formats\niid split")
+    #     plt.savefig(f"{args.image_dir}/std_boxplot_{model}.png", dpi=350, bbox_inches="tight")
+    #     plt.close()
+
+    #     plt.figure(figsize=(12, 8))
+    #     sns.boxplot(data=subset, x="median_accuracy", y="experiment", color=model2color[model], legend=False)
+    #     plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
+    #     plt.ylabel("")
+    #     plt.title(f"Median accuracy across prompt formats\niid split")
+    #     plt.savefig(f"{args.image_dir}/median_accuracy_boxplot_{model}.png", dpi=350, bbox_inches="tight")
+    #     plt.close()
+
+    #     # plt.figure(figsize=(12, 8))
+    #     # sns.boxplot(data=subset, x="mean_drop", y="experiment", color=model2color[model], whis=(5, 95), legend=False)
+    #     # plt.xlabel(f"Whiskers denote 5th and 95th percentiles\n{N_SELECTED_TASKS} tasks from Natural Instructions")
+    #     # plt.ylabel("")
+    #     # plt.title(f"Mean performance change across prompt formats compared to default format\niid split")
+    #     # plt.savefig(f"{args.image_dir}/mean_drop_boxplot_{model}.png", dpi=350, bbox_inches="tight")
+    #     # plt.close()
+
+    # plt.figure(figsize=(12, 8))
+    # sns.barplot(data=total_df, x="spread", y="experiment", hue="model", errorbar=None, palette=model2color)
+    # plt.xlabel(f"Spread across prompt formats\n{N_SELECTED_TASKS} tasks from Natural Instructions")
+    # plt.ylabel("")
+    # plt.title("Spread across prompt formats\niid split")
+    # plt.savefig(f"{args.image_dir}/spread.png", dpi=350, bbox_inches="tight")
+    # plt.close()
+
+    # plt.figure(figsize=(12, 8))
+    # sns.barplot(data=total_df, x="std", y="experiment", hue="model", errorbar=None, palette=model2color)
+    # plt.xlabel(f"Standard deviation of accuracy across prompt formats\n{N_SELECTED_TASKS} tasks from Natural Instructions")
+    # plt.ylabel("")
+    # plt.title("Standard deviation of accuracy across prompt formats\niid split")
+    # plt.savefig(f"{args.image_dir}/std.png", dpi=350, bbox_inches="tight")
+    # plt.close()
 
     # plt.figure(figsize=(12, 8))
     # sns.barplot(data=total_df, x="spread", y="experiment", hue="model", errorbar=("pi", 90), palette=model2color, legend=False)
@@ -242,18 +320,20 @@ if __name__ == "__main__":
     # plt.savefig(f"{args.image_dir}/all_barplot.png", dpi=350, bbox_inches="tight")
     # plt.close()
 
-    plt.figure(figsize=(12, 8))
-    sns.boxplot(data=total_df, x="median_accuracy", y="experiment", hue="model", palette=model2color, legend=False)
-    plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
-    plt.ylabel("")
-    plt.title(f"Median accuracy across prompt formats\niid split")
-    plt.savefig(f"{args.image_dir}/median_accuracy_all_boxplot.png", dpi=350, bbox_inches="tight")
-    plt.close()
-
+# Barplot with errorbars
     # plt.figure(figsize=(12, 8))
-    # sns.boxplot(data=total_df, x="mean_drop", y="experiment", hue="model", whis=(5, 95), palette=model2color, legend=False)
-    # plt.xlabel(f"Whiskers denote 5th and 95th percentiles\n{N_SELECTED_TASKS} tasks from Natural Instructions")
+    # sns.barplot(data=total_df, x="median_accuracy", y="experiment", hue="model", errorbar=None, palette=model2color)
+    # plt.errorbar(
+    #     x=total_df.groupby("experiment")["median_accuracy"].mean(),
+    #     y=total_df.groupby("experiment")["experiment"].first(),
+    #     xerr=2 * total_df.groupby("experiment")["std"].mean(),
+    #     fmt="none",
+    #     linewidth=2,
+    #     color="black",
+    #     capsize=4,
+    # )
+    # plt.title(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
     # plt.ylabel("")
-    # plt.title("Mean performance change across prompt formats compared to default format\niid split")
-    # plt.savefig(f"{args.image_dir}/mean_drop_boxplot.png", dpi=350, bbox_inches="tight")
+    # plt.xlabel(f"Barplot -- accuracy: median over formats, mean over tasks.\nErrorbars -- variation of accuracy: 2 * (std over formats, mean over tasks).")
+    # plt.savefig(f"{args.image_dir}/median_accuracy_all_boxplot.png", dpi=350, bbox_inches="tight")
     # plt.close()
