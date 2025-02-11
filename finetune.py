@@ -339,8 +339,8 @@ class CustomSFTTrainer(SFTTrainer):
 
     def _perturbation_consistency_loss(self, y_c, y_p):
  
-        y_c_avg = (y_c * (y_c != 0)).sum(dim=1) / (y_c != 0).sum(dim=1)
-        y_p_avg = (y_p * (y_p != 0)).sum(dim=1) / (y_p != 0).sum(dim=1)
+        y_c_avg = y_c.sum(dim=1) / (y_c != 0).sum(dim=1)
+        y_p_avg = y_p.sum(dim=1) / (y_p != 0).sum(dim=1)
 
         # y_c_avg = y_c.mean(dim=1)
         # y_p_avg = y_p.mean(dim=1)
@@ -390,8 +390,6 @@ class CustomSFTTrainer(SFTTrainer):
         )
 
         total_loss = lc + lp + beta * l_js
-        print(f'lc:{lc}, lp:{lp}, l_js:{l_js}')
-
         return total_loss
 
 
