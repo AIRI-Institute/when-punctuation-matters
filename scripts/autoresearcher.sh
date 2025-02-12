@@ -6,8 +6,8 @@ suffix=$4                       # e.g. "---iid-no-chat-template"
 finetune_output_dir=$5          # e.g. "llama1b_iid"
 
 ### Setting some variables ###
-dataset="natural-instructions"
-# dataset="data/df_hermes_simple_answers.csv"
+# dataset="natural-instructions"
+dataset="data/df_hermes_simple_answers.csv"
 # Splits by `/` and takes last part (which is model's name)
 model_name=$( echo ${full_huggingface_model_name} | rev | cut -d / -f1 | rev )
 finetuned_model_name=${model_name}_lora
@@ -119,7 +119,7 @@ do
                 --apply_batch_calibration ${apply_batch_calibration} \
                 --evaluation_metric probability_ranking \
                 --evaluation_type full \
-                --cache_dir /home/seleznev/.cache/huggingface \
+                --cache_dir /home/seleznev/.cache/huggingface/hub \
                 --output_dir exp/${exp_name} \
                 --nodes_to_evaluate_filepath train_test_splits/${format_split_mode}/holistic_random_sample_${task}_nodes_${num_formats_to_analyze}_textdisabled.json
         done
