@@ -221,7 +221,8 @@ def custom_tokenizer(examples, instructions_pattern, response_pattern, tokenizer
         padding='max_length',
         truncation=True,
         return_tensors="pt",
-        max_length=max_length
+        max_length=max_length, 
+        add_special_tokens = False
     )
 
     perturb_encodings = tokenizer(
@@ -230,7 +231,8 @@ def custom_tokenizer(examples, instructions_pattern, response_pattern, tokenizer
         padding='max_length',
         truncation=True,
         return_tensors="pt",
-        max_length=max_length
+        max_length=max_length, 
+        add_special_tokens = False
     )
 
     return {
@@ -271,11 +273,11 @@ class CustomDataCollator(DataCollatorMixin):
     Custom Data Collator to prepare batched inputs required for consistency loss computation.
     """
 
-    def __init__(self, *args, tokenizer, **kwargs): 
+    def __init__(self, *args, tokenizer, **kwargs):
         self.tokenizer = tokenizer
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
-                
+
         input_ids_c = [torch.tensor(f["input_ids_c"]) for f in features]
         labels_c = [torch.tensor(f["labels_c"]) for f in features]
         attention_mask_c = [torch.tensor(f["attention_mask_c"]) for f in features]
@@ -286,34 +288,31 @@ class CustomDataCollator(DataCollatorMixin):
 
 
         def mask_non_predicted(labels, input_ids):
-            
-            masked_labels = labels.clone()
+            padded_labels = []
+
             for i in range(len(labels)):
-                predicted_indices = (labels[i] != self.tokenizer.pad_token_id).nonzero(as_tuple=True)[0]
+                n_pred = sum(input_ids[i] != self.tokenizer.pad_token_id).item()
+                left_pad = torch.ones(n_pred, dtype=labels[0].dtype) * tokenizer.pad_token_id
+                padded_label = torch.cat((left_pad, labels[i][:-n_pred]))
+                padded_labels.append(padded_label)
 
-                if len(predicted_indices) > 0:
-                    first_predicted_idx = predicted_indices[0]
-                    masked_labels[i, :first_predicted_idx] = -100  # set all content before the predicted part eq -100
-                else:
-                    masked_labels[i, :] = -100  
+            return padded_labels
 
-            return masked_labels
-        
-        labels_c = mask_non_predicted(torch.stack(labels_c), torch.stack(input_ids_c))
-        labels_p = mask_non_predicted(torch.stack(labels_p), torch.stack(input_ids_p))
+        labels_c = mask_non_predicted(labels_c, input_ids_c)
+        labels_p = mask_non_predicted(labels_p, input_ids_p)
 
         batch = {
             "input_ids_c": torch.stack(input_ids_c),
-            "labels_c": labels_c,
+            "labels_c": torch.stack(labels_c),
             "attention_mask_c": torch.stack(attention_mask_c),
 
             "input_ids_p": torch.stack(input_ids_p),
-            "labels_p": labels_p,
+            "labels_p": torch.stack(labels_p),
             "attention_mask_p": torch.stack(attention_mask_p)
         }
 
         return batch
-    
+
 # custom class for JS-loss
 class CustomSFTTrainer(SFTTrainer):
 
@@ -342,13 +341,10 @@ class CustomSFTTrainer(SFTTrainer):
         y_c_avg = y_c.sum(dim=1) / (y_c != 0).sum(dim=1)
         y_p_avg = y_p.sum(dim=1) / (y_p != 0).sum(dim=1)
 
-        # y_c_avg = y_c.mean(dim=1)
-        # y_p_avg = y_p.mean(dim=1)
-
         loss_js = self._jensen_shannon_divergence(y_c_avg, y_p_avg).mean()
         return loss_js
 
-    def _compute_loss_consistency(self, model, inputs, *args, beta=1, **kwargs):
+    def _compute_loss_consistency(self, model, inputs, *args, beta=10, **kwargs):
    
         input_ids_c = inputs["input_ids_c"]
         labels_c = inputs["labels_c"]
@@ -364,20 +360,20 @@ class CustomSFTTrainer(SFTTrainer):
         outputs_p = model(input_ids=input_ids_p, attention_mask=attention_mask_p)
         logits_p = outputs_p.logits
 
-        loss_mask_c = (labels_c != -100)  
-        loss_mask_p = (labels_p != -100)
+        loss_mask_c = (labels_c != self.tokenizer.pad_token_id) 
+        loss_mask_p = (labels_p != self.tokenizer.pad_token_id)
 
         lc = F.cross_entropy(
             logits_c.view(-1, logits_c.shape[-1]),
             labels_c.view(-1),
-            ignore_index=-100, 
+            ignore_index=self.tokenizer.pad_token_id,
             reduction="mean"
         )
 
         lp = F.cross_entropy(
             logits_p.view(-1, logits_p.shape[-1]),
             labels_p.view(-1),
-            ignore_index=-100,
+            ignore_index=self.tokenizer.pad_token_id,
             reduction="mean"
         )
 
