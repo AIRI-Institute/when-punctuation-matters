@@ -360,8 +360,8 @@ class CustomSFTTrainer(SFTTrainer):
 
     def _perturbation_consistency_loss(self, y_c, denom_c, y_p, denom_p):
 
-        y_c_avg = y_c.sum(dim=1) / (2048 - denom_c.requires_grad_(False)) #TODO: change to max_length
-        y_p_avg = y_p.sum(dim=1) / (2048 - denom_p.requires_grad_(False))
+        y_c_avg = y_c.sum(dim=1) / (2048 - denom_c.requires_grad_(False)).unsqueeze(-1) #TODO: change to max_length
+        y_p_avg = y_p.sum(dim=1) / (2048 - denom_p.requires_grad_(False)).unsqueeze(-1)
 
         loss_js = self._jensen_shannon_divergence(y_c_avg, y_p_avg).mean()
         return loss_js
