@@ -235,12 +235,30 @@ def custom_tokenizer(examples, instructions_pattern, response_pattern, tokenizer
         add_special_tokens = False
     )
 
+    def _mask_non_predicted(labels, input_ids):
+        padded_labels = []
+        n_preds = []
+
+        for i in range(len(labels)):
+            n_pred = sum(input_ids[i] != tokenizer.pad_token_id).item()
+            left_pad = torch.ones(n_pred, dtype=labels[0].dtype) * tokenizer.pad_token_id
+            padded_label = torch.cat((left_pad, labels[i][:-n_pred]))
+            padded_labels.append(padded_label)
+            n_preds.append(n_pred)
+
+        return padded_labels, n_preds
+
+    masked_labels_c, len_mask_c = _mask_non_predicted(clean_encodings["labels"],clean_encodings["input_ids"])
+    masked_labels_p, len_mask_p = _mask_non_predicted(perturb_encodings["labels"],perturb_encodings["input_ids"])
+
     return {
         "input_ids_c": clean_encodings["input_ids"],
-        "labels_c": clean_encodings["labels"],
+        "labels_c": masked_labels_c,
+        "label_mask_len_c": len_mask_c,
         "attention_mask_c": clean_encodings["attention_mask"],
         "input_ids_p": perturb_encodings["input_ids"],
-        "labels_p": perturb_encodings["labels"],
+        "labels_p": masked_labels_p,
+        "label_mask_len_p": len_mask_p,
         "attention_mask_p": perturb_encodings["attention_mask"]
 
     }
@@ -279,34 +297,38 @@ class CustomDataCollator(DataCollatorMixin):
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
 
         input_ids_c = [torch.tensor(f["input_ids_c"]) for f in features]
+        label_mask_len_c = [torch.tensor(f["label_mask_len_c"]) for f in features]
         labels_c = [torch.tensor(f["labels_c"]) for f in features]
         attention_mask_c = [torch.tensor(f["attention_mask_c"]) for f in features]
 
         input_ids_p = [torch.tensor(f["input_ids_p"]) for f in features]
+        label_mask_len_p = [torch.tensor(f["label_mask_len_p"]) for f in features]
         labels_p = [torch.tensor(f["labels_p"]) for f in features]
         attention_mask_p = [torch.tensor(f["attention_mask_p"]) for f in features]
 
 
-        def mask_non_predicted(labels, input_ids):
-            padded_labels = []
+        # def mask_non_predicted(labels, input_ids):
+        #     padded_labels = []
 
-            for i in range(len(labels)):
-                n_pred = sum(input_ids[i] != self.tokenizer.pad_token_id).item()
-                left_pad = torch.ones(n_pred, dtype=labels[0].dtype) * tokenizer.pad_token_id
-                padded_label = torch.cat((left_pad, labels[i][:-n_pred]))
-                padded_labels.append(padded_label)
+        #     for i in range(len(labels)):
+        #         n_pred = sum(input_ids[i] != self.tokenizer.pad_token_id).item()
+        #         left_pad = torch.ones(n_pred, dtype=labels[0].dtype) * tokenizer.pad_token_id
+        #         padded_label = torch.cat((left_pad, labels[i][:-n_pred]))
+        #         padded_labels.append(padded_label)
 
-            return padded_labels
+        #     return padded_labels
 
-        labels_c = mask_non_predicted(labels_c, input_ids_c)
-        labels_p = mask_non_predicted(labels_p, input_ids_p)
+        # labels_c = mask_non_predicted(labels_c, input_ids_c)
+        # labels_p = mask_non_predicted(labels_p, input_ids_p)
 
         batch = {
             "input_ids_c": torch.stack(input_ids_c),
+            "label_mask_len_c": torch.stack(label_mask_len_c),
             "labels_c": torch.stack(labels_c),
             "attention_mask_c": torch.stack(attention_mask_c),
 
             "input_ids_p": torch.stack(input_ids_p),
+            "label_mask_len_p": torch.stack(label_mask_len_p),
             "labels_p": torch.stack(labels_p),
             "attention_mask_p": torch.stack(attention_mask_p)
         }
@@ -336,10 +358,10 @@ class CustomSFTTrainer(SFTTrainer):
         return 0.5 * (self._kl_divergence(p, m) + self._kl_divergence(q, m))
     
 
-    def _perturbation_consistency_loss(self, y_c, y_p):
- 
-        y_c_avg = y_c.sum(dim=1) / (y_c != 0).sum(dim=1)
-        y_p_avg = y_p.sum(dim=1) / (y_p != 0).sum(dim=1)
+    def _perturbation_consistency_loss(self, y_c, denom_c, y_p, denom_p):
+
+        y_c_avg = y_c.sum(dim=1) / (2048 - denom_c.requires_grad_(False)) #TODO: change to max_length
+        y_p_avg = y_p.sum(dim=1) / (2048 - denom_p.requires_grad_(False))
 
         loss_js = self._jensen_shannon_divergence(y_c_avg, y_p_avg).mean()
         return loss_js
@@ -348,10 +370,12 @@ class CustomSFTTrainer(SFTTrainer):
    
         input_ids_c = inputs["input_ids_c"]
         labels_c = inputs["labels_c"]
+        label_mask_len_c = inputs['label_mask_len_c']
         attention_mask_c = inputs["attention_mask_c"]
 
         input_ids_p = inputs["input_ids_p"]
         labels_p = inputs["labels_p"]
+        label_mask_len_p = inputs['label_mask_len_p']
         attention_mask_p = inputs["attention_mask_p"]
 
         outputs_c = model(input_ids=input_ids_c, attention_mask=attention_mask_c)
@@ -380,9 +404,12 @@ class CustomSFTTrainer(SFTTrainer):
         y_c_prob = F.softmax(logits_c, dim=-1)
         y_p_prob = F.softmax(logits_p, dim=-1)
 
+
         l_js = self._perturbation_consistency_loss(
-            y_c_prob * loss_mask_c.unsqueeze(-1),  
-            y_p_prob * loss_mask_p.unsqueeze(-1)
+            y_c_prob * loss_mask_c.unsqueeze(-1),
+            label_mask_len_c, 
+            y_p_prob * loss_mask_p.unsqueeze(-1),
+            label_mask_len_p
         )
 
         total_loss = lc + lp + beta * l_js
