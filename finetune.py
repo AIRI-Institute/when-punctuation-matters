@@ -1,18 +1,21 @@
 import ast
 import json
 import torch
+import torch.nn.functional as F
 import random
 import pandas as pd
 from pathlib import Path
 from argparse import ArgumentParser
 from dataclasses import dataclass
-from typing import Optional, Tuple, Set, Dict, List
+from typing import Optional, Tuple, Set, Dict, List, Any
 from tqdm.auto import tqdm
 from datasets import load_dataset, Dataset
 from trl import SFTTrainer
 from unsloth import FastLanguageModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template, standardize_sharegpt, train_on_responses_only
-from transformers import TrainingArguments, DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
+from transformers import TrainingArguments, DataCollatorForSeq2Seq
+from transformers.data.data_collator import DataCollatorMixin
+
 
 from generate_test_formats import (
     VANILLA_MAPPING_ALL_CATEGORIES,
@@ -192,6 +195,75 @@ def get_dataset(dataset_name: str, n_samples: int, n_augmentations: int, format_
     return final_dataset
 
 
+def prepare_dataset(dataset): 
+    clean = [x for x in dataset['text'][::2]]
+    perturb = [x for x in dataset['text'][1::2]]
+
+    return Dataset.from_dict(
+        {
+            "text": clean, 
+            "perturbed_text": perturb
+        }
+    )
+
+def custom_tokenizer(examples, instructions_pattern, response_pattern, tokenizer, max_length):
+
+    texts_c = [x.split(response_pattern)[0].replace(instructions_pattern, '') for x in examples["text"]]
+    labels_c = [x.split(response_pattern)[1] for x in examples["text"]]
+
+    texts_p = [x.split(response_pattern)[0].replace(instructions_pattern, '') for x in examples["perturbed_text"]]
+    labels_p = [x.split(response_pattern)[1] for x in examples["perturbed_text"]]
+
+
+    clean_encodings = tokenizer(
+        text = texts_c,
+        text_target = labels_c,
+        padding='max_length',
+        truncation=True,
+        return_tensors="pt",
+        max_length=max_length, 
+        add_special_tokens = False
+    )
+
+    perturb_encodings = tokenizer(
+        text=texts_p,
+        text_target=labels_p,
+        padding='max_length',
+        truncation=True,
+        return_tensors="pt",
+        max_length=max_length, 
+        add_special_tokens = False
+    )
+
+    def _mask_non_predicted(labels, input_ids):
+        padded_labels = []
+        n_preds = []
+
+        for i in range(len(labels)):
+            n_pred = sum(input_ids[i] != tokenizer.pad_token_id).item()
+            left_pad = torch.ones(n_pred, dtype=labels[0].dtype) * tokenizer.pad_token_id
+            padded_label = torch.cat((left_pad, labels[i][:-n_pred]))
+            padded_labels.append(padded_label)
+            n_preds.append(n_pred)
+
+        return padded_labels, n_preds
+
+    masked_labels_c, len_mask_c = _mask_non_predicted(clean_encodings["labels"],clean_encodings["input_ids"])
+    masked_labels_p, len_mask_p = _mask_non_predicted(perturb_encodings["labels"],perturb_encodings["input_ids"])
+
+    return {
+        "input_ids_c": clean_encodings["input_ids"],
+        "labels_c": masked_labels_c,
+        "label_mask_len_c": len_mask_c,
+        "attention_mask_c": clean_encodings["attention_mask"],
+        "input_ids_p": perturb_encodings["input_ids"],
+        "labels_p": masked_labels_p,
+        "label_mask_len_p": len_mask_p,
+        "attention_mask_p": perturb_encodings["attention_mask"]
+
+    }
+
+
 @dataclass
 class LoraArguments:
     target_modules: Tuple
@@ -214,8 +286,138 @@ class DatasetArguments:
     start_idx: int
 
 
+class CustomDataCollator(DataCollatorMixin):
+    """
+    Custom Data Collator to prepare batched inputs required for consistency loss computation.
+    """
+
+    def __init__(self, *args, tokenizer, **kwargs):
+        self.tokenizer = tokenizer
+
+    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+
+        input_ids_c = [torch.tensor(f["input_ids_c"]) for f in features]
+        label_mask_len_c = [torch.tensor(f["label_mask_len_c"]) for f in features]
+        labels_c = [torch.tensor(f["labels_c"]) for f in features]
+        attention_mask_c = [torch.tensor(f["attention_mask_c"]) for f in features]
+
+        input_ids_p = [torch.tensor(f["input_ids_p"]) for f in features]
+        label_mask_len_p = [torch.tensor(f["label_mask_len_p"]) for f in features]
+        labels_p = [torch.tensor(f["labels_p"]) for f in features]
+        attention_mask_p = [torch.tensor(f["attention_mask_p"]) for f in features]
+
+
+        # def mask_non_predicted(labels, input_ids):
+        #     padded_labels = []
+
+        #     for i in range(len(labels)):
+        #         n_pred = sum(input_ids[i] != self.tokenizer.pad_token_id).item()
+        #         left_pad = torch.ones(n_pred, dtype=labels[0].dtype) * tokenizer.pad_token_id
+        #         padded_label = torch.cat((left_pad, labels[i][:-n_pred]))
+        #         padded_labels.append(padded_label)
+
+        #     return padded_labels
+
+        # labels_c = mask_non_predicted(labels_c, input_ids_c)
+        # labels_p = mask_non_predicted(labels_p, input_ids_p)
+
+        batch = {
+            "input_ids_c": torch.stack(input_ids_c),
+            "label_mask_len_c": torch.stack(label_mask_len_c),
+            "labels_c": torch.stack(labels_c),
+            "attention_mask_c": torch.stack(attention_mask_c),
+
+            "input_ids_p": torch.stack(input_ids_p),
+            "label_mask_len_p": torch.stack(label_mask_len_p),
+            "labels_p": torch.stack(labels_p),
+            "attention_mask_p": torch.stack(attention_mask_p)
+        }
+
+        return batch
+
+# custom class for JS-loss
+class CustomSFTTrainer(SFTTrainer):
+
+    def __init__(self, *args, loss_type='consistency', **kwargs):
+        """
+        Added the additional property 'loss_type' during initialization.
+        """
+        super().__init__(*args, **kwargs)
+        self.loss_type = loss_type
+
+        if self.loss_type == 'consistency':
+                self.compute_loss = self._compute_loss_consistency
+
+
+    def _kl_divergence(self, p, q):
+
+        return F.kl_div(p.log(), q, reduction='batchmean') 
+
+    def _jensen_shannon_divergence(self, p, q):
+        m = 0.5 * (p + q)  
+        return 0.5 * (self._kl_divergence(p, m) + self._kl_divergence(q, m))
+    
+
+    def _perturbation_consistency_loss(self, y_c, denom_c, y_p, denom_p):
+
+        y_c_avg = y_c.sum(dim=1) / (2048 - denom_c.requires_grad_(False)).unsqueeze(-1) #TODO: change to max_length
+        y_p_avg = y_p.sum(dim=1) / (2048 - denom_p.requires_grad_(False)).unsqueeze(-1)
+
+        loss_js = self._jensen_shannon_divergence(y_c_avg, y_p_avg).mean()
+        return loss_js
+
+    def _compute_loss_consistency(self, model, inputs, *args, beta=10, **kwargs):
+   
+        input_ids_c = inputs["input_ids_c"]
+        labels_c = inputs["labels_c"]
+        label_mask_len_c = inputs['label_mask_len_c']
+        attention_mask_c = inputs["attention_mask_c"]
+
+        input_ids_p = inputs["input_ids_p"]
+        labels_p = inputs["labels_p"]
+        label_mask_len_p = inputs['label_mask_len_p']
+        attention_mask_p = inputs["attention_mask_p"]
+
+        outputs_c = model(input_ids=input_ids_c, attention_mask=attention_mask_c)
+        logits_c = outputs_c.logits
+
+        outputs_p = model(input_ids=input_ids_p, attention_mask=attention_mask_p)
+        logits_p = outputs_p.logits
+
+        loss_mask_c = (labels_c != self.tokenizer.pad_token_id) 
+        loss_mask_p = (labels_p != self.tokenizer.pad_token_id)
+
+        lc = F.cross_entropy(
+            logits_c.view(-1, logits_c.shape[-1]),
+            labels_c.view(-1),
+            ignore_index=self.tokenizer.pad_token_id,
+            reduction="mean"
+        )
+
+        lp = F.cross_entropy(
+            logits_p.view(-1, logits_p.shape[-1]),
+            labels_p.view(-1),
+            ignore_index=self.tokenizer.pad_token_id,
+            reduction="mean"
+        )
+
+        y_c_prob = F.softmax(logits_c, dim=-1)
+        y_p_prob = F.softmax(logits_p, dim=-1)
+
+
+        l_js = self._perturbation_consistency_loss(
+            y_c_prob * loss_mask_c.unsqueeze(-1),
+            label_mask_len_c, 
+            y_p_prob * loss_mask_p.unsqueeze(-1),
+            label_mask_len_p
+        )
+
+        total_loss = lc + lp + beta * l_js
+        return total_loss
+
+
 def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_arguments: TrainingArguments, dataset_arguments: DatasetArguments,
-                   seed: int, max_seq_length: int, dtype: torch.dtype, load_in_4bit: bool, device: str, output_dir: str):
+                   seed: int, max_seq_length: int, dtype: torch.dtype, load_in_4bit: bool, device: str, output_dir: str, loss_type: str):
     model, tokenizer = load_model(model_name, max_seq_length, dtype, load_in_4bit, device)
 
     model = FastLanguageModel.get_peft_model(
@@ -240,30 +442,50 @@ def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_argu
         dataset_arguments.path_to_test_formats,
         dataset_arguments.start_idx,
     )
+    if loss_type != 'consistency':
 
-    trainer = SFTTrainer(
-        model=model,
-        tokenizer=tokenizer,
-        train_dataset=dataset,
-        dataset_text_field="text",
-        max_seq_length=max_seq_length,
-        data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer),
-        dataset_num_proc=2,
-        packing=False, # Can make training 5x faster for short sequences.
-        args=training_arguments
-    )
+        trainer = SFTTrainer(
+            model=model,
+            tokenizer=tokenizer,
+            train_dataset=dataset,
+            dataset_text_field="text",
+            max_seq_length=max_seq_length,
+            data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer),
+            dataset_num_proc=2,
+            packing=False, # Can make training 5x faster for short sequences.
+            args=training_arguments
+        )
 
-    trainer = train_on_responses_only(
-        trainer,
-        instruction_part=INSTRUCTION_PART_TAG,
-        response_part=RESPONSE_PART_TAG,
-    )
+        trainer = train_on_responses_only(
+            trainer,
+            instruction_part=INSTRUCTION_PART_TAG,
+            response_part=RESPONSE_PART_TAG,
+        )
+        
+        print("Check masking")
+        print(RESPONSE_PART_TAG, tokenizer.encode(RESPONSE_PART_TAG), [tokenizer.decode(tok) for tok in tokenizer.encode(RESPONSE_PART_TAG)])
+        print("ORIGINAL:", tokenizer.decode(trainer.train_dataset[5]["input_ids"]))
+        space = tokenizer(" ", add_special_tokens = False).input_ids[0]
+        print("MASKED:", tokenizer.decode([space if x == -100 else x for x in trainer.train_dataset[5]["labels"]]))
+        
+    else: 
+        
+        prepared_dataset = prepare_dataset(dataset)
+        
+        dataset = prepared_dataset.map(
+            lambda x: custom_tokenizer(x, INSTRUCTION_PART_TAG, RESPONSE_PART_TAG, tokenizer, max_seq_length),
+            batched=True,
+            num_proc=4
+            )
+        
+        trainer = CustomSFTTrainer(
+            model=model,
+            train_dataset=dataset,
+            data_collator=CustomDataCollator(tokenizer=tokenizer),
+            args=training_arguments, 
+            loss_type=loss_type
+        )
 
-    print("Check masking")
-    print(RESPONSE_PART_TAG, tokenizer.encode(RESPONSE_PART_TAG), [tokenizer.decode(tok) for tok in tokenizer.encode(RESPONSE_PART_TAG)])
-    print("ORIGINAL:", tokenizer.decode(trainer.train_dataset[5]["input_ids"]))
-    space = tokenizer(" ", add_special_tokens = False).input_ids[0]
-    print("MASKED:", tokenizer.decode([space if x == -100 else x for x in trainer.train_dataset[5]["labels"]]))
 
     #Show current memory stats
     gpu_stats = torch.cuda.get_device_properties(0)
@@ -347,6 +569,7 @@ def make_parser():
     parser.add_argument("--logging-steps", type=int, default=10)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("-o", "--output-dir", type=str, required=True)
+    parser.add_argument("--loss_type", type=str, default='default')
 
     return parser
 
@@ -377,6 +600,10 @@ if __name__ == "__main__":
         path_to_test_formats=args.path_to_test_formats,
         start_idx=args.start_idx
     )
+    if args.loss_type == "consistency": 
+        remove_unused_columns = False
+    else: 
+        remove_unused_columns = True
 
     training_arguments = TrainingArguments(
         per_device_train_batch_size=args.batch_size,
@@ -396,9 +623,11 @@ if __name__ == "__main__":
         report_to="none", # Use this for WandB etc
         save_total_limit=3,
         save_steps=100,
+        remove_unused_columns=remove_unused_columns
     )
+    
 
     model, tokenizer = run_finetuning(args.model_name, lora_arguments, training_arguments, dataset_arguments, args.seed,
-                                      args.max_seq_length, dtype, args.load_in_4bit, args.device, args.output_dir)
+                                      args.max_seq_length, dtype, args.load_in_4bit, args.device, args.output_dir, args.loss_type)
 
     sample_inference(model, tokenizer)
