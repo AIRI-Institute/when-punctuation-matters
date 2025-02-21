@@ -7,7 +7,7 @@ import numpy as np
 
 from grammar_definition import pointers_to_all_objects, create_pointer_action_type_pairs, \
     flatten, MAPPING_ALL_CATEGORIES, holistic_node_format_sanity_checks
-from utils import evaluate_prompt_format, solve_with_rank_based_scoring_ensembles
+from utils import evaluate_prompt_format, evaluate_prompt_format_ensembles
 
 random.seed(0)
 
@@ -154,7 +154,8 @@ class TemplateEnsemblesAlgorithmAmongPrompts:
 
             structured_prompt_format, global_constraints = self.all_structured_prompt_formats[resolved_prompts[i]]
             structured_prompt_format_list.append(structured_prompt_format)
-        acc, history = solve_with_rank_based_scoring_ensembles(
+
+        acc, history = evaluate_prompt_format_ensembles(
             **self.args_compute_node_score,
             structured_prompt_format_list=structured_prompt_format_list,
             original_to_current_multiple_choice_classes_list=original_to_current_multiple_choice_classes_list,
