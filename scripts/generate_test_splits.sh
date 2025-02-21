@@ -6,18 +6,13 @@ do
     do
         output_dir=train_test_splits
 
-        if [[ -d ${output_dir}/${mode} ]]; then
-            echo "${output_dir}/${mode} exists, skipping generation"
-            continue
-        fi
-
         mkdir ${output_dir}/${mode}
 
         python generate_test_formats.py \
             --task_filename DUMMY_VALUE \
             --dataset_name natural-instructions \
             --num_formats_to_analyze ${n_formats} \
-            --cache_dir /home/seleznev/.cache/huggingface \
+            --cache_dir /home/mvchaychuk/.cache/huggingface \
             --output_dir ${output_dir} \
             --n-train 0 \
             --n-val 0 \
