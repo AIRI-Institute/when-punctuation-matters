@@ -361,35 +361,35 @@ def main():
         sorted([filename.name for filename in Path(args.root_dir).iterdir() if filename.is_dir()])
 
     experiment_names = [name for name in experiment_names if 
-        not "zeroshot" in name and 
-        not "test" in name and 
-        not "ensemble" in name and 
-        not "debug" in name and 
-        not "batch-calibration-probs" in name and 
-        not "sensitivity-aware-decoding" in name and
-        not "rank1" in name and
-        not "batch-calibration" in name and
-        not "default" in name and 
-        not "augs" in name and 
-        # not "exact-match" in name and 
-        not "compositional" in name and
-        # ("lora" in name  or "iidx2-no-chat" in name) and 
-        not "lora" in name and
-        not "cross" in name and
-        not "unbalanced" in name and
-        not "consistency" in name
         # not "1ksteps" in name and
         # not "superclear" in name and
         # not "iid" in name and
         # not "simpleanswers-batch-calibration" in name
+        not "zeroshot" in name and 
+        not "test" in name and 
+        not "augs" in name and 
+        not "debug" in name and 
+        not "batch-calibration-probs" in name and 
+        not "rank1" in name and
+        not "default" in name and 
+        not "ensemble" in name and 
+        not "sensitivity-aware-decoding" in name and
+        not "batch-calibration" in name and
+        # ("lora" in name  or "iidx2-no-chat" in name) and 
+        not "exact-match" in name and 
+        not "compositional" in name and
+        # "lora" in name and
+        not "cross" in name and
+        not "unbalanced" in name
+        # "consistency" in name
     ]
-    # experiment_names = [name for name in experiment_names if "2-shot" in name or "0-shot" in name]
     experiment_names = [name for name in experiment_names if ("2-shot" in name and "lora" not in name) or ("0-shot" in name and "lora" in name)]
     experiment_names = [name for name in experiment_names if "no-chat-template" in name]
     experiment_names = [name for name in experiment_names if ("instruct" in name.lower() or "it" in name)]
-    experiment_names = [name for name in experiment_names if "Llama" in name or "Qwen2.5" in name or "gemma-2" in name]
-    # experiment_names = [name for name in experiment_names if "Llama" in name]
-    # experiment_names = [name for name in experiment_names if "3B" in name or "2b" in name or "1B" in name]
+    # experiment_names = [name for name in experiment_names if "Llama" in name or "Qwen2.5" in name or "gemma-2" in name]
+    experiment_names = [name for name in experiment_names if "Llama-3.2-3B" in name]
+    # experiment_names = [name for name in experiment_names if "Llama-3.2" in name or "Qwen2.5-1.5B" in name or "Qwen2.5-3B" in name]
+    # experiment_names = [name for name in experiment_names if "3B" in name or "1.5B" in name or "1B" in name]
 
     for n in experiment_names:
         print("\t", n)
@@ -405,7 +405,7 @@ def main():
         current_hash = get_experiment_hash(subdir)
         current_hashes[experiment_name] = current_hash
         
-        if (experiment_name in cached_results and 
+        if False and (experiment_name in cached_results and 
                 experiment_name in cached_hashes and 
                 cached_hashes[experiment_name] == current_hash):
             # Use cached results
@@ -451,13 +451,21 @@ def main():
             tail = tail.replace("separator-space-", "")
             tail = tail.replace("compositional-", " (compositional)")
 
+            tail = tail.replace("32augs-", " (32 augs)")
+            tail = tail.replace("2augs-", " (2 augs)")
+            tail = tail.replace("8augs-", " (8 augs)")
+            tail = tail.replace("16augs-", " (16 augs)")
+
             tail = "LoRA" + tail 
+
+            # if tail == "LoRA":
+            #     tail = "LoRA (4 augs)"
             model_name = model_name.replace("_lora", "")
         else:
             tail = tail.replace("2-shot", "")
             tail = tail.replace("iidx2-split-", "")
             tail = tail.replace("iidx2-", "")
-            tail = tail.replace("iid", "")
+            tail = tail.replace("iid-", "(new) ")
             tail = tail.replace("batch-calibration-", "BC")
             tail = tail.replace("sensitivity-aware-decoding-", "SAD")
             tail = tail.replace("template-ensembles-", "TE")
@@ -507,9 +515,12 @@ def main():
         with open(f"{args.image_dir}/rankings_{metric}.tex", "w") as f:
             f.write(latex_table)
     # all_methods = ["FS", "BC", "SAD", "TE", "LoRA (uniform)", "LoRA (compositional)", "LoRA (cross-domain)", "LoRA (consistency)"]
-    all_methods = ["FS", "BC", "SAD", "TE", "LoRA", "LoRA (compositional)", "LoRA (cross-domain)", "LoRA (consistency)"]
+    # all_methods = ["FS", "BC", "SAD", "TE", "LoRA", "LoRA (compositional)", "LoRA (cross-domain)", "LoRA (consistency)", "LoRA (consistency)-beta30.0"]
+    all_methods = ["FS", "BC", "SAD", "TE", "LoRA", "LoRA (consistency)", "LoRA (consistency)-beta30.0", "LoRA (consistency)-beta100.0"]
+    # all_methods = ["FS", "LoRA (2 augs)", "LoRA (4 augs)", "LoRA (8 augs)", "LoRA (16 augs)", "LoRA (32 augs)"]
 
     unique_methods = total_df["method"].unique()
+    print(f"{unique_methods=}")
     for m in unique_methods:
         if m not in all_methods:
             print(f"{m} is not in the list of methods")
@@ -519,7 +530,7 @@ def main():
     total_df = total_df.sort_values(["method", "size"])
     total_df["method"] = total_df["method"].cat.remove_unused_categories()
 
-    total_df = total_df[total_df["setting"] == "exact-match"]
+    # total_df = total_df[total_df["setting"] == "exact-match"]
 
     default_figsize = (22, 9)
     default_legend_loc = (1.0, 0.5)
@@ -531,19 +542,21 @@ def main():
     # default_corner = "center"
 
 # Spread
+    x_axis = "model"
     plt.figure(figsize=default_figsize)
-    ax = sns.barplot(data=total_df, x="model", y="spread", hue="method", errorbar=None, palette=method2color)
+    ax = sns.barplot(data=total_df, x=x_axis, y="spread", hue="method" if x_axis == "model" else None, errorbar=None, palette=method2color)
     plt.xticks(rotation=15, ha="right")
     plt.xlabel("")
     plt.ylabel("Spread over prompts", labelpad=25)
     plt.title("Methods' spread over prompts on different models\n(lower is better)")
-    sns.move_legend(ax, default_corner, bbox_to_anchor=default_legend_loc, ncol=default_ncol, title="Method")
+    if ax.legend_ is not None:
+        sns.move_legend(ax, default_corner, bbox_to_anchor=default_legend_loc, ncol=default_ncol, title="Method")
     plt.savefig(f"{args.image_dir}/clustered_spread_barplot.png", dpi=550, bbox_inches="tight")
     plt.close()
 
 # Clustered barplot of accuracy with errorbars
     plt.figure(figsize=default_figsize)
-    ax = sns.barplot(data=total_df, x="model", y="median_accuracy", hue="method", errorbar=None, palette=method2color)
+    ax = sns.barplot(data=total_df, x=x_axis, y="median_accuracy", hue="method" if x_axis == "model" else None, errorbar=None, palette=method2color)
     plt.xticks(rotation=15, ha="right")
 
     mean_stds = total_df.groupby(["model", "method"], observed=True)["std"].mean()
@@ -556,15 +569,16 @@ def main():
     plt.xlabel("")
     plt.ylabel("Accuracy", labelpad=25)
     plt.title("Methods' performance on different models")
-    sns.move_legend(ax, default_corner, bbox_to_anchor=default_legend_loc, ncol=default_ncol, title="Method")
+    if ax.legend_ is not None:
+        sns.move_legend(ax, default_corner, bbox_to_anchor=default_legend_loc, ncol=default_ncol, title="Method")
     plt.savefig(f"{args.image_dir}/clustered_barplot.png", dpi=550, bbox_inches="tight")
     plt.close()
 
-# Stacked spread and accuracy plots
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(24, 15), sharex=True)
+# Paired spread and accuracy plots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 15), sharex=True)
     
     # Top plot (spread)
-    sns.barplot(data=total_df, x="model", y="spread", hue="method", errorbar=None, palette=method2color, ax=ax1)
+    sns.barplot(data=total_df, x=x_axis, y="spread", hue="method" if x_axis == "model" else None, errorbar=None, palette=method2color, ax=ax1)
     # ax1.set_xticklabels([])  # Remove x tick labels from top plot
     ax1.tick_params(axis="x", which="both", length=0.)
     ax1.set_xlabel("")
@@ -573,7 +587,7 @@ def main():
     ax1.get_legend().remove()  # Remove legend from top plot
     
     # Bottom plot (accuracy with errorbars)
-    sns.barplot(data=total_df, x="model", y="median_accuracy", hue="method", errorbar=None, palette=method2color, ax=ax2)
+    sns.barplot(data=total_df, x=x_axis, y="median_accuracy", hue="method" if x_axis == "model" else None, errorbar=None, palette=method2color, ax=ax2)
     ax2.set_xticklabels(ax2.get_xticklabels(), rotation=15, ha="right")
     ax2.set_xlabel("")
     ax2.set_ylabel("Accuracy", labelpad=25)
@@ -604,15 +618,60 @@ def main():
                 bbox_inches="tight")
     plt.close()
 
+# Paired spread and Matthews correlation coefficient plots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(24, 15), sharex=True)
+    
+    # Top plot (spread Matthews)
+    sns.barplot(data=total_df, x=x_axis, y="spread_matthews", hue="method" if x_axis == "model" else None, errorbar=None, palette=method2color, ax=ax1)
+    ax1.tick_params(axis="x", which="both", length=0.)
+    ax1.set_xlabel("")
+    ax1.set_ylabel("Spread (Matthews)", labelpad=25)
+    ax1.set_title("Methods' spread (Matthews) over prompts on different models\n(lower is better)", fontsize=36, pad=30)
+    ax1.get_legend().remove()
+    
+    # Bottom plot (Matthews correlation coefficient with errorbars)
+    sns.barplot(data=total_df, x=x_axis, y="median_matthews_corrcoef", hue="method" if x_axis == "model" else None, errorbar=None, palette=method2color, ax=ax2)
+    ax2.set_xticklabels(ax2.get_xticklabels(), rotation=15, ha="right")
+    ax2.set_xlabel("")
+    ax2.set_ylabel("Matthews correlation", labelpad=25)
+    ax2.set_title("Methods' performance on different models", fontsize=36, pad=30)
+    
+    # Add asymmetric error bars to bottom plot
+    mean_upper_error = total_df.groupby(["model", "method"], observed=True)["upper_error_matthews"].mean()
+    mean_lower_error = total_df.groupby(["model", "method"], observed=True)["lower_error_matthews"].mean()
+    for p, upper, lower in zip(ax2.patches, mean_upper_error, mean_lower_error):
+        x = p.get_x()
+        w = p.get_width()
+        h = p.get_height()
+        ax2.errorbar(x + w / 2, h, yerr=[[lower], [upper]], fmt="none", linewidth=2, color="black", capsize=4)
+    
+    # Move legend to the right center
+    legend = ax2.get_legend()
+    fig.legend(
+        legend.legend_handles, 
+        [t.get_text() for t in legend.get_texts()],
+        title="Method",
+        bbox_to_anchor=(1.0, 0.5),
+        loc="center left"
+    )
+    legend.remove()
+    
+    plt.tight_layout()
+    plt.savefig(f"{args.image_dir}/paired_clustered_spread_and_matthews_with_errorbars.png", 
+                dpi=550, 
+                bbox_inches="tight")
+    plt.close()
+
 
 # Std
     plt.figure(figsize=default_figsize)
-    ax = sns.barplot(data=total_df, x="model", y="std", hue="method", errorbar=None, palette=method2color)
+    ax = sns.barplot(data=total_df, x=x_axis, y="std", hue="method" if x_axis == "model" else None, errorbar=None, palette=method2color)
     plt.xticks(rotation=15, ha="right")
     plt.xlabel("")
     plt.ylabel("Standard deviation over prompts", labelpad=25)
     plt.title("Methods' standard deviation over prompts on different models\n(lower is better)")
-    sns.move_legend(ax, default_corner, bbox_to_anchor=default_legend_loc, ncol=default_ncol, title="Method")
+    if ax.legend_ is not None:
+        sns.move_legend(ax, default_corner, bbox_to_anchor=default_legend_loc, ncol=default_ncol, title="Method")
     plt.savefig(f"{args.image_dir}/clustered_std_barplot.png", dpi=550, bbox_inches="tight")
     plt.close()
 
@@ -662,9 +721,57 @@ def main():
     plt.savefig(f"{args.image_dir}/pareto_accuracy_spread.png", dpi=550, bbox_inches="tight", bbox_extra_artists=[legend1, legend2])
     plt.close()
 
+
+# Pareto: accuracy/spread
+    plt.figure(figsize=(20, 9))
+    averaged_by_tasks = pd.concat([
+        total_df.groupby(["method", "model"], observed=True)[["median_accuracy", "spread"]].mean(),
+        total_df.groupby(["method", "model"], observed=True)[["method", "model", "size"]].first()
+    ], axis=1)
+
+    ax = sns.scatterplot(
+        data=averaged_by_tasks,
+        y="median_accuracy",
+        x="spread",
+        hue="method",
+        style="model",
+        size="size",
+        palette=method2color,
+        sizes=(400, 1000),
+        edgecolor="black",
+        linewidth=1,
+    )
+    plt.xlabel("Spread over prompts", labelpad=10)
+    plt.ylabel("Accuracy", labelpad=15)
+    plt.title("Accuracy and spread trade-off")
+
+    for method in total_df['method'].unique():
+        method_data = averaged_by_tasks[averaged_by_tasks['method'] == method]
+        mean = method_data[['spread', 'median_accuracy',]].mean().values
+        cov = method_data[['spread', 'median_accuracy', ]].cov().values
+        
+        plot_gaussian(mean, cov, ax, method2color[method], n_std=1.5)
+
+    front = find_pareto_front(averaged_by_tasks, "median_accuracy", "spread")
+
+    ax.plot(front["spread"], front["median_accuracy"], linewidth=2, linestyle="--", color="black")
+
+    h, l = ax.get_legend_handles_labels()
+    method_border = total_df.method.nunique() + 1
+    size_border = total_df["method"].nunique() + 1 + total_df["size"].nunique() + 1
+    # legend1 = plt.legend(h[1:method_border], l[1:method_border], loc="center", bbox_to_anchor=(0.5, -0.3), ncol=6, title="Method", markerscale=4)
+    legend1 = plt.legend(h[1:method_border], l[1:method_border], loc="upper right", bbox_to_anchor=(1.0, 1.0), ncol=1, title="Method", markerscale=4, fontsize=28, title_fontsize=32)
+    legend2 = plt.legend(h[size_border:], l[size_border:], loc="upper right", bbox_to_anchor=(1.3, 1.0), ncols=1, title="Model", markerscale=4, fontsize=28, title_fontsize=32)
+    ax.add_artist(legend1)
+    ax.add_artist(legend2)
+
+    plt.savefig(f"{args.image_dir}/pareto_matthews_spread.png", dpi=550, bbox_inches="tight", bbox_extra_artists=[legend1, legend2])
+    plt.close()
+
+
 # Clustered barplot of BALANCED accuracy with errorbars
     plt.figure(figsize=default_figsize)
-    ax = sns.barplot(data=total_df, x="model", y="median_balanced_accuracy", hue="method", errorbar=None, palette=method2color)
+    ax = sns.barplot(data=total_df, x=x_axis, y="median_balanced_accuracy", hue="method" if x_axis == "model" else None, errorbar=None, palette=method2color)
     plt.xticks(rotation=15, ha="right")
 
     mean_stds = total_df.groupby(["model", "method"], observed=True)["std_balanced"].mean()
@@ -677,25 +784,27 @@ def main():
     plt.xlabel("")
     plt.ylabel("Balanced accuracy", labelpad=25)
     plt.title("Methods' performance on different models")
-    sns.move_legend(ax, default_corner, bbox_to_anchor=default_legend_loc, ncol=default_ncol, title="Method")
+    if ax.legend_ is not None:
+        sns.move_legend(ax, default_corner, bbox_to_anchor=default_legend_loc, ncol=default_ncol, title="Method")
     plt.savefig(f"{args.image_dir}/clustered_barplot_balanced.png", dpi=550, bbox_inches="tight")
     plt.close()
 
 # BALANCED Spread
     plt.figure(figsize=default_figsize)
-    ax = sns.barplot(data=total_df, x="model", y="spread", hue="method", errorbar=None, palette=method2color)
+    ax = sns.barplot(data=total_df, x=x_axis, y="spread", hue="method" if x_axis == "model" else None, errorbar=None, palette=method2color)
     plt.xticks(rotation=15, ha="right")
     plt.xlabel("")
     plt.ylabel("Spread of balanced accuracy over prompts", labelpad=25)
     plt.title("Methods' balanced accuracy spread over prompts on different models\n(lower is better)")
-    sns.move_legend(ax, default_corner, bbox_to_anchor=default_legend_loc, ncol=default_ncol, title="Method")
+    if ax.legend_ is not None:
+        sns.move_legend(ax, default_corner, bbox_to_anchor=default_legend_loc, ncol=default_ncol, title="Method")
     plt.savefig(f"{args.image_dir}/clustered_spread_barplot_balanced.png", dpi=550, bbox_inches="tight")
     plt.close()
 
 
 # Clustered barplot of MATTHEWS CORRELATION with errorbars
     plt.figure(figsize=default_figsize)
-    ax = sns.barplot(data=total_df, x="model", y="median_matthews_corrcoef", hue="method", errorbar=None, palette=method2color)
+    ax = sns.barplot(data=total_df, x=x_axis, y="median_matthews_corrcoef", hue="method" if x_axis == "model" else None, errorbar=None, palette=method2color)
     plt.xticks(rotation=15, ha="right")
 
     mean_upper_error = total_df.groupby(["model", "method"], observed=True)["upper_error_matthews"].mean()
@@ -710,14 +819,15 @@ def main():
     plt.xlabel("")
     plt.ylabel("Matthews correlation", labelpad=25)
     plt.title("Methods' performance on different models")
-    sns.move_legend(ax, default_corner, bbox_to_anchor=default_legend_loc, ncol=default_ncol, title="Method")
+    if ax.legend_ is not None:
+        sns.move_legend(ax, default_corner, bbox_to_anchor=default_legend_loc, ncol=default_ncol, title="Method")
     plt.savefig(f"{args.image_dir}/clustered_barplot_matthews.png", dpi=550, bbox_inches="tight")
     plt.close()
 
 # Side-by-side MATTHEWS CORRELATION with errorbars
     print(total_df)
     plt.figure(figsize=default_figsize)
-    ax = sns.barplot(data=total_df, x="setting", y="median_matthews_corrcoef", hue="method", errorbar=None, palette=method2color)
+    ax = sns.barplot(data=total_df, x="setting", y="median_matthews_corrcoef", hue="method" if x_axis == "model" else None, errorbar=None, palette=method2color)
     # plt.xticks(rotation=15, ha="right")
 
     mean_upper_error = total_df.groupby(["setting", "method"], observed=True)["upper_error_matthews"].mean()
@@ -732,7 +842,8 @@ def main():
     plt.xlabel("")
     plt.ylabel("Matthews correlation", labelpad=25)
     plt.title("Uniform vs. unbalanced setting, Llama 3.1 8B")
-    sns.move_legend(ax, default_corner, bbox_to_anchor=default_legend_loc, ncol=default_ncol, title="Method")
+    if ax.legend_ is not None:
+        sns.move_legend(ax, default_corner, bbox_to_anchor=default_legend_loc, ncol=default_ncol, title="Method")
     plt.savefig(f"{args.image_dir}/clustered_barplot_matthews_setting.png", dpi=550, bbox_inches="tight")
     plt.close()
 
