@@ -4,6 +4,7 @@ import os
 import psutil
 from tqdm import tqdm
 from typing import List
+from collections import Counter
 
 import openai
 import torch
@@ -742,20 +743,44 @@ def solve_with_exact_match_scoring(args, dataset, selected_dataset_ids, model, t
             accuracy['total']), (accuracy, logs)
 
 
-@torch.inference_mode()
-def solve_with_rank_based_scoring_ensembles(args, dataset, input_fields_list, regex_key_idx_list, selected_dataset_ids,
+def evaluate_prompt_format_ensembles(
+        args, dataset, input_fields_list, regex_key_idx_list, selected_dataset_ids,
         demos_fields_list, demos_regex_key_idx_list, demonstrations_outputs, demonstration_definition,
         structured_prompt_format_list, model, tokenizer, model_will_repeat_input,
         original_to_current_multiple_choice_classes_list, interval_ids_to_test=(None, None)):
-    
+    """
+    Function that evaluates a prompt format (i.e. node) on a given set of samples (interval_ids_to_test).
+    If interval_ids_to_test is not provided, it defaults to evaluating the whole dataset.
+    """
+    # 1. set up input prompts including demonstrations
+    input_prompt_string_list = []
+    for i in range(len(structured_prompt_format_list)):
+        input_prompt_string_list_i, selected_dataset_ids = _setup_full_prompts_to_test_on(
+            input_fields_list, regex_key_idx_list, selected_dataset_ids,
+            demos_fields_list, demos_regex_key_idx_list, demonstrations_outputs, demonstration_definition,
+            structured_prompt_format_list[i], original_to_current_multiple_choice_classes_list[i], interval_ids_to_test, args.n_shot)
+        input_prompt_string_list.append(input_prompt_string_list_i)
+    # 2. update the output values if needed, i.e. if the multiple choice classes now have different names
     assert all(len(dataset[idx]['output']) == 1 for idx in selected_dataset_ids)
     dataset_updated = copy.deepcopy(dataset)
     if original_to_current_multiple_choice_classes_list[0]:
         for idx in range(len(dataset)):
             dataset_updated[idx]['output'][0] = original_to_current_multiple_choice_classes_list[0][dataset[idx]['output'][0]]
-    output_classes = sorted(list(set([dataset_updated[idx]['output'][0] for idx in selected_dataset_ids])))
+
+    # 3. evaluate
+    if args.evaluation_metric == 'probability_ranking':
+        return solve_with_rank_based_scoring_ensembles(
+            args, dataset_updated, selected_dataset_ids, model, tokenizer, input_prompt_string_list)
     
-    assert len(output_classes) < 100
+    elif args.evaluation_metric == 'exact_match':
+        return solve_with_exact_match_scoring_ensembles(
+            args, dataset_updated, selected_dataset_ids, model, tokenizer, input_prompt_string_list)
+
+
+@torch.inference_mode()
+def solve_with_rank_based_scoring_ensembles(args, dataset, selected_dataset_ids, model, tokenizer, input_prompt_string_list):
+    output_classes = sorted(list(set([dataset[idx]['output'][0] for idx in selected_dataset_ids])))
+    assert 1 < len(output_classes) < 100
     assert tokenizer is not None and model is not None
 
     answer_lengths = [len(a) for a in tokenizer(output_classes, add_special_tokens=False)["input_ids"]]
@@ -769,19 +794,13 @@ def solve_with_rank_based_scoring_ensembles(args, dataset, input_fields_list, re
     }
     logs = []
 
-    batch_calibration_pr = None
-
     for batch_idx in tqdm(range(math.ceil(len(selected_dataset_ids) / args.batch_size_llm)), desc="batches"):
         batch_start_idx = batch_idx * args.batch_size_llm
         batch_end_idx = (batch_idx + 1) * args.batch_size_llm
 
         cumulative_probs = None
-        for i in range(len(structured_prompt_format_list)):
-            input_prompt_string_list = _setup_full_prompts_to_test_on_batch(
-                input_fields_list, regex_key_idx_list, selected_dataset_ids,
-                demos_fields_list, demos_regex_key_idx_list, demonstrations_outputs, demonstration_definition,
-                structured_prompt_format_list[i], original_to_current_multiple_choice_classes_list[i], (batch_start_idx, batch_end_idx), args.n_shot)
-            prompts = input_prompt_string_list
+        for i in range(len(input_prompt_string_list)):
+            prompts = prompts = input_prompt_string_list[i][batch_start_idx:batch_end_idx]
             actual_batch_size = len(prompts)
 
             inputs = _tokenize_prompts_with_answers(prompts, output_classes, "_lora" in args.model_name, tokenizer).to(model.device)
@@ -816,12 +835,12 @@ def solve_with_rank_based_scoring_ensembles(args, dataset, input_fields_list, re
             else:
                 cumulative_probs += F.softmax(cumulative_logits.reshape(actual_batch_size, len(output_classes)), dim=-1)
 
-        cumulative_probs /= len(structured_prompt_format_list)
+        cumulative_probs /= len(input_prompt_string_list)
         chosen_answer_indices = cumulative_probs.argmax(dim=-1).cpu()
 
         for idx in range(actual_batch_size):
             generation = output_classes[chosen_answer_indices[idx].item()]
-            expected_output = dataset_updated[selected_dataset_ids[batch_start_idx + idx]]["output"][0]
+            expected_output = dataset[selected_dataset_ids[batch_start_idx + idx]]["output"][0]
             accuracy["right"].append(generation == expected_output)
             accuracy["wrong"].append(generation != expected_output and generation in output_classes)
             accuracy["other"].append(generation not in output_classes)
@@ -830,7 +849,7 @@ def solve_with_rank_based_scoring_ensembles(args, dataset, input_fields_list, re
 
             logs.append(
                 {
-                    'entry': dataset_updated[selected_dataset_ids[batch_idx + idx]],
+                    'entry': dataset[selected_dataset_ids[batch_idx + idx]],
                     'dataset_idx': idx,
                     'generation': generation,
                     'answer': expected_output,
@@ -841,6 +860,88 @@ def solve_with_rank_based_scoring_ensembles(args, dataset, input_fields_list, re
             )
 
         del logits
+        torch.cuda.empty_cache()
+
+    return (sum(accuracy['right']) * 1.0 / max(accuracy['total'], 1),
+            sum(accuracy['wrong']) * 1.0 / max(accuracy['total'], 1),
+            accuracy['total']), (accuracy, logs)
+
+
+@torch.inference_mode()
+def solve_with_exact_match_scoring_ensembles(args, dataset, selected_dataset_ids, model, tokenizer, input_prompt_string_list):
+    output_classes = sorted(list(set([dataset[idx]['output'][0] for idx in selected_dataset_ids])))
+    assert len(output_classes) < 100
+    assert tokenizer is not None and model is not None
+
+    answer_lengths = [len(a) for a in tokenizer(output_classes, add_special_tokens=False)["input_ids"]]
+    max_answer_length = max(answer_lengths)
+
+    accuracy = {
+        'right': [],
+        'wrong': [],
+        'other': [],
+        'total': 0
+    }
+    logs = []
+
+    clean_text = lambda x: x.strip(' .,()\n-><').lower()
+
+    for batch_idx in tqdm(range(math.ceil(len(selected_dataset_ids) / args.batch_size_llm)), desc="batches"):
+        batch_start_idx = batch_idx * args.batch_size_llm
+        batch_end_idx = (batch_idx + 1) * args.batch_size_llm
+
+        model_answers = []
+        for i in range(len(input_prompt_string_list)):
+            prompts = input_prompt_string_list[i][batch_start_idx:batch_end_idx]
+            actual_batch_size = len(prompts)
+
+            inputs = inputs = _tokenize_prompts(prompts, tokenizer).to(model.device)
+
+            # inputs.input_ids has shape [batch_size, seq_len]
+            # print(f"{inputs['input_ids'].shape=}")
+
+            generation = model.generate(**inputs, max_new_tokens=max_answer_length + 1, do_sample=False, top_p=None, temperature=None).detach()
+
+            answers_i = tokenizer.batch_decode(generation[:, inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+            model_answers.append(answers_i)
+        model_answers = list(map(list, zip(*model_answers)))
+        model_answers = [Counter(ensemble).most_common(1)[0][0] for ensemble in model_answers]
+
+        # answers = [output_texts[i][len(prompts[i]):] for i in range(len(output_texts))]
+
+        for idx in range(actual_batch_size):
+            clean_model_answer = clean_text(model_answers[idx])
+
+            expected_output = dataset[selected_dataset_ids[batch_start_idx + idx]]["output"][0]
+            wrong_answers = [e for e in output_classes if e != expected_output]
+
+            right_answer = clean_text(expected_output)
+            wrong_answers = [clean_text(e) for e in wrong_answers]
+
+            is_right = match_robust_to_multiple_choice(clean_model_answer, right_answer)
+            is_wrong = any(
+                match_robust_to_multiple_choice(clean_model_answer, wrong_answer) for wrong_answer in wrong_answers)
+
+            accuracy['right'].append(is_right)
+            accuracy['wrong'].append(is_wrong)
+            accuracy['other'].append(not is_wrong and not is_right)
+            # by construction chosen answer is always from output_classes, but this might be useful for free-form answers later
+            accuracy["total"] += 1
+
+            logs.append(
+                {
+                    'entry': dataset[selected_dataset_ids[batch_idx + idx]],
+                    'dataset_idx': idx,
+                    'generation': model_answers[idx],
+                    'answer': expected_output,
+                    'output_classes': output_classes,
+                    # 'full_prompt_string': input_prompt_string_list[batch_start_idx + idx],
+                    'eval_type': 'ranking',
+                    'scores': None,
+                }
+            )
+
+        del generation
         torch.cuda.empty_cache()
 
     return (sum(accuracy['right']) * 1.0 / max(accuracy['total'], 1),
