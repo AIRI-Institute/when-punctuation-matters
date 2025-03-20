@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 import random
 import pandas as pd
+import wandb
 from pathlib import Path
 from argparse import ArgumentParser
 from dataclasses import dataclass
@@ -136,7 +137,8 @@ def _build_natural_instruction_dataset(path_to_test_formats: str, start_idx: int
         instances.extend([task["Instances"][i] for i in train_ids])
     
     dataset = {"conversations": []}
-    for instance in tqdm(instances, "instances to conversations"):
+    # :1000 for debugging
+    for instance in tqdm(instances[:1000], "instances to conversations"):
         conversation = [
             {
                 "from": "human",
@@ -184,6 +186,7 @@ def get_dataset(dataset_name: str, n_samples: int, n_augmentations: int, format_
     all_formatted_texts = []
     for conversation in dataset["conversations"]:
         for _ in range(n_augmentations):
+            # all_formatted_texts.append(<conversation>)
             all_formatted_texts.append(augment_conversation(conversation, format_split_mode, test_format_hashes))
 
     final_dataset = Dataset.from_list(all_formatted_texts)
@@ -218,20 +221,20 @@ def custom_tokenizer(examples, instructions_pattern, response_pattern, tokenizer
     clean_encodings = tokenizer(
         text = texts_c,
         text_target = labels_c,
-        padding='max_length',
+        padding='longest',
         truncation=True,
         return_tensors="pt",
-        max_length=max_length, 
+        # max_length=max_length, 
         add_special_tokens = False
     )
 
     perturb_encodings = tokenizer(
         text=texts_p,
         text_target=labels_p,
-        padding='max_length',
+        padding='longest',
         truncation=True,
         return_tensors="pt",
-        max_length=max_length, 
+        # max_length=max_length, 
         add_special_tokens = False
     )
 
@@ -306,20 +309,10 @@ class CustomDataCollator(DataCollatorMixin):
         labels_p = [torch.tensor(f["labels_p"]) for f in features]
         attention_mask_p = [torch.tensor(f["attention_mask_p"]) for f in features]
 
-
-        # def mask_non_predicted(labels, input_ids):
-        #     padded_labels = []
-
-        #     for i in range(len(labels)):
-        #         n_pred = sum(input_ids[i] != self.tokenizer.pad_token_id).item()
-        #         left_pad = torch.ones(n_pred, dtype=labels[0].dtype) * tokenizer.pad_token_id
-        #         padded_label = torch.cat((left_pad, labels[i][:-n_pred]))
-        #         padded_labels.append(padded_label)
-
-        #     return padded_labels
-
-        # labels_c = mask_non_predicted(labels_c, input_ids_c)
-        # labels_p = mask_non_predicted(labels_p, input_ids_p)
+        print("input_ids_c", [len(x) for x in input_ids_c])
+        print("label_mask_len_c", [x for x in label_mask_len_c])
+        print("labels_c", [len(x) for x in labels_c])
+        print("attention_mask_c", [len(x) for x in attention_mask_c])
 
         batch = {
             "input_ids_c": torch.stack(input_ids_c),
@@ -338,19 +331,20 @@ class CustomDataCollator(DataCollatorMixin):
 # custom class for JS-loss
 class CustomSFTTrainer(SFTTrainer):
 
-    def __init__(self, *args, loss_type='consistency', **kwargs):
+    def __init__(self, *args, loss_type='consistency', beta=10, **kwargs):
         """
         Added the additional property 'loss_type' during initialization.
         """
         super().__init__(*args, **kwargs)
         self.loss_type = loss_type
+        self.beta = beta
 
         if self.loss_type == 'consistency':
-                self.compute_loss = self._compute_loss_consistency
+            self.compute_loss = self._compute_loss_consistency
 
+        print(f"At init: {self.args.report_to=}")
 
     def _kl_divergence(self, p, q):
-
         return F.kl_div(p.log(), q, reduction='batchmean') 
 
     def _jensen_shannon_divergence(self, p, q):
@@ -359,15 +353,13 @@ class CustomSFTTrainer(SFTTrainer):
     
 
     def _perturbation_consistency_loss(self, y_c, denom_c, y_p, denom_p):
-
         y_c_avg = y_c.sum(dim=1) / (2048 - denom_c.requires_grad_(False)).unsqueeze(-1) #TODO: change to max_length
         y_p_avg = y_p.sum(dim=1) / (2048 - denom_p.requires_grad_(False)).unsqueeze(-1)
 
         loss_js = self._jensen_shannon_divergence(y_c_avg, y_p_avg).mean()
         return loss_js
 
-    def _compute_loss_consistency(self, model, inputs, *args, beta=10, **kwargs):
-   
+    def _compute_loss_consistency(self, model, inputs, *args, **kwargs):
         input_ids_c = inputs["input_ids_c"]
         labels_c = inputs["labels_c"]
         label_mask_len_c = inputs['label_mask_len_c']
@@ -404,7 +396,6 @@ class CustomSFTTrainer(SFTTrainer):
         y_c_prob = F.softmax(logits_c, dim=-1)
         y_p_prob = F.softmax(logits_p, dim=-1)
 
-
         l_js = self._perturbation_consistency_loss(
             y_c_prob * loss_mask_c.unsqueeze(-1),
             label_mask_len_c, 
@@ -412,12 +403,33 @@ class CustomSFTTrainer(SFTTrainer):
             label_mask_len_p
         )
 
-        total_loss = lc + lp + beta * l_js
+        autoscale = (lc.detach() + lp.detach()) / l_js.detach()
+        assert autoscale.requires_grad == False
+
+        total_loss = lc + lp + self.beta * autoscale * l_js
+        
+        print(f"{self.args.report_to=}, {self.state.global_step=}")
+        print(f"{lc.item()=:.3f}, {lp.item()=:.3f}, {l_js.item()=:.3f}, {total_loss.item()=:.3f}")
+        # Log individual loss components
+        if self.args.report_to == "wandb" and self.state.global_step % 10 == 0:
+            print("Logging to wandb")
+            wandb.log({
+                "loss/cross_entropy_first": lc.item(),
+                "loss/cross_entropy_second": lp.item(),
+                "loss/perturbation_consistency": l_js.item(),
+                "loss/total": total_loss.item()
+            }, 
+            # step=self.state.global_step
+        )
+
         return total_loss
+
+    def _get_train_sampler(self):
+        return torch.utils.data.SequentialSampler(self.train_dataset)
 
 
 def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_arguments: TrainingArguments, dataset_arguments: DatasetArguments,
-                   seed: int, max_seq_length: int, dtype: torch.dtype, load_in_4bit: bool, device: str, output_dir: str, loss_type: str):
+                   seed: int, max_seq_length: int, dtype: torch.dtype, load_in_4bit: bool, device: str, output_dir: str, loss_type: str, beta: float):
     model, tokenizer = load_model(model_name, max_seq_length, dtype, load_in_4bit, device)
 
     model = FastLanguageModel.get_peft_model(
@@ -442,8 +454,8 @@ def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_argu
         dataset_arguments.path_to_test_formats,
         dataset_arguments.start_idx,
     )
-    if loss_type != 'consistency':
 
+    if loss_type != 'consistency':
         trainer = SFTTrainer(
             model=model,
             tokenizer=tokenizer,
@@ -468,22 +480,23 @@ def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_argu
         space = tokenizer(" ", add_special_tokens = False).input_ids[0]
         print("MASKED:", tokenizer.decode([space if x == -100 else x for x in trainer.train_dataset[5]["labels"]]))
         
-    else: 
-        
+    else:     
         prepared_dataset = prepare_dataset(dataset)
         
         dataset = prepared_dataset.map(
             lambda x: custom_tokenizer(x, INSTRUCTION_PART_TAG, RESPONSE_PART_TAG, tokenizer, max_seq_length),
             batched=True,
+            batch_size=1024,
             num_proc=4
-            )
+        )
         
         trainer = CustomSFTTrainer(
             model=model,
             train_dataset=dataset,
             data_collator=CustomDataCollator(tokenizer=tokenizer),
             args=training_arguments, 
-            loss_type=loss_type
+            loss_type=loss_type,
+            beta=beta
         )
 
 
@@ -504,8 +517,6 @@ def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_argu
     save_path = f"{output_dir}/{model_name}_lora"
     model.save_pretrained(save_path)
     tokenizer.save_pretrained(save_path)
-    # model.push_to_hub("your_name/lora_model", token = "...")
-    # tokenizer.push_to_hub("your_name/lora_model", token = "...")
 
     return model, tokenizer
 
@@ -560,8 +571,8 @@ def make_parser():
     parser.add_argument("--use-rslora", action="store_true")
 
     # Training arguments
-    parser.add_argument("-b", "--batch-size", type=int, default=16)
-    parser.add_argument("--grad-accum-steps", type=int, default=4)
+    parser.add_argument("-b", "--batch-size", type=int, default=4)
+    parser.add_argument("--grad-accum-steps", type=int, default=16)
     parser.add_argument("--warmup-steps", type=int, default=5)
     parser.add_argument("--num-epochs", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=1000)
@@ -569,7 +580,12 @@ def make_parser():
     parser.add_argument("--logging-steps", type=int, default=10)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("-o", "--output-dir", type=str, required=True)
-    parser.add_argument("--loss_type", type=str, default='default')
+    parser.add_argument("--loss-type", type=str, default='default')
+    parser.add_argument("--beta", type=float, default=10.0)
+
+    # Wandb arguments
+    parser.add_argument("--use-wandb", action="store_true", help="Enable wandb logging")
+    parser.add_argument("--wandb-project", type=str, default="prompt-instability", help="Wandb project name")
 
     return parser
 
@@ -605,6 +621,16 @@ if __name__ == "__main__":
     else: 
         remove_unused_columns = True
 
+    # Configure wandb reporting
+    report_to = "none"
+    if args.use_wandb:
+        report_to = "wandb"
+        wandb.init(
+            project=args.wandb_project,
+            config=vars(args)
+        )
+        print(f"Wandb initialized: {wandb.run.name}")
+
     training_arguments = TrainingArguments(
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum_steps,
@@ -620,7 +646,7 @@ if __name__ == "__main__":
         lr_scheduler_type="linear",
         seed=args.seed,
         output_dir=args.output_dir,
-        report_to="none", # Use this for WandB etc
+        report_to=report_to,  # Use wandb if enabled
         save_total_limit=3,
         save_steps=100,
         remove_unused_columns=remove_unused_columns
@@ -628,6 +654,10 @@ if __name__ == "__main__":
     
 
     model, tokenizer = run_finetuning(args.model_name, lora_arguments, training_arguments, dataset_arguments, args.seed,
-                                      args.max_seq_length, dtype, args.load_in_4bit, args.device, args.output_dir, args.loss_type)
+                                      args.max_seq_length, dtype, args.load_in_4bit, args.device, args.output_dir, args.loss_type, args.beta)
 
     sample_inference(model, tokenizer)
+
+    # Close wandb run if it was used
+    if args.use_wandb and 'wandb' in locals():
+        wandb.finish()

@@ -6,8 +6,8 @@ suffix=$4                       # e.g. "---iid-no-chat-template"
 finetune_output_dir=$5          # e.g. "llama1b_iid"
 
 ### Setting some variables ###
-# dataset="natural-instructions"
-dataset="data/df_hermes_simple_answers.csv"
+dataset="natural-instructions"
+# dataset="data/df_hermes_simple_answers.csv"
 # Splits by `/` and takes last part (which is model's name)
 model_name=$( echo ${full_huggingface_model_name} | rev | cut -d / -f1 | rev )
 finetuned_model_name=${model_name}_lora
@@ -80,12 +80,17 @@ do
         break
     fi
 
+    beta=1.0
     CUDA_VISIBLE_DEVICES=$devices python finetune.py \
         --model-name ${full_huggingface_model_name} \
         --dataset-name ${dataset} \
         --output-dir training/${finetune_output_dir} \
         --format-split-mode ${format_split_mode} \
-        --path-to-test-formats ${path_to_test_formats}
+        --path-to-test-formats ${path_to_test_formats} \
+        --n-augmentations 4 \
+        --use-wandb \
+        --loss-type "consistency" \
+        --beta ${beta} > training/${finetune_output_dir}_finetune.log 2>&1
 
     # Otherwise, retry finetuning after 30 minute pause
     echo "Failed retry ${retry}"
