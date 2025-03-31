@@ -2,6 +2,8 @@ import json
 import os
 import random
 import re
+import datasets
+from typing import List, Tuple
 
 from grammar_definition import flatten, _one_text_field
 from parsing_supernatural_instructions_tasks import SUPERNATURAL_INSTRUCTIONS_TASKS_WITH_NO_FORMAT, \
@@ -14,6 +16,93 @@ INSTRUCTION_INDUCTION_DIRECTORY = '../instruction-induction'
 STRING_ALL_CHARACTERS_FOR_REGEX_MATCHING = "([A-Za-z0-9α-ωΑ-Ω“”‘’′`,.…'-–—−:∶\(\)\[\]{}/%\?\!\\\" ;$≤≥≠†€₹→≡~∨⊃·°•∃∀ʻ&⁄\_#\\n𝑆𝑚√𝑠𝑁𝐴𝑒𝑅𝑇ι⟩⟨›‹ου‖♥‰�龍►➥™,‚∼⋅]+)"
 random.seed(0)
 
+def load_gpqa_dataset(args):
+    gpqa = datasets.load_dataset("Idavidrein/gpqa", "gpqa_diamond")
+    
+    dataset = {}
+    dataset["Instances"] = []
+
+    for sample in gpqa["train"]:
+        question = sample["Question"]
+        answer = sample["Correct Answer"]
+        incorrect_answer1 = sample["Incorrect Answer 1"]
+        incorrect_answer2 = sample["Incorrect Answer 2"]
+        incorrect_answer3 = sample["Incorrect Answer 3"]
+
+        print(question)
+        print(answer)
+        print(incorrect_answer1)
+
+        dataset["Instances"].append({
+            "question": question,
+            "correct_answer": answer,
+            "incorrect_answers": [incorrect_answer1, incorrect_answer2, incorrect_answer3]
+        })
+
+    return dataset
+
+
+def format_gpqa_question(
+        question: str,
+        correct_answer_id: int,
+        shuffled_answers: List[str],
+        value_assignment: List[str],
+        action_types: List[str]
+) -> Tuple[str, List[str]]:
+
+    assert len(value_assignment) == len(action_types) == 6
+    assert len(shuffled_answers) == 4
+    assert correct_answer_id in (0, 1, 2, 3)
+
+    action2value = zip(action_types, value_assignment)
+
+    text_descriptor_fn = action2value["text_descriptor_fn"]
+    chosen_space = action2value["chosen_space"]
+    chosen_separator = action2value["chosen_separator"]
+    chosen_separator_text_and_option = action2value["chosen_separator_text_and_option"]
+    chosen_item_wrapper = action2value["chosen_item_wrapper"]
+    chosen_number_format = action2value["chosen_number_format"]
+
+    multiple_choice_string = chosen_separator_text_and_option.join([
+        f"{chosen_item_wrapper(chosen_number_format(i))}{shuffled_answers[i]}"
+        for i in range(len(shuffled_answers))
+    ])
+    correct_answer_item = chosen_number_format(correct_answer_id)
+
+    return f"{text_descriptor_fn('Question')}{chosen_separator}{question}{chosen_space}"\
+        f"{text_descriptor_fn('Options')}{chosen_separator}{multiple_choice_string}{chosen_space}"\
+        f"{text_descriptor_fn('Answer')}{chosen_separator}", [correct_answer_item]
+
+
+def build_gpqa_prompts(dataset, value_assignment, action_types, n_shot):
+    state = random.getstate()
+    random.seed(0)
+
+    indices = list(range(len(dataset["Instances"])))
+    random.shuffle(indices)
+
+    for i in indices:
+        entry = dataset["Instances"][i]
+        question = entry["question"]
+        correct_answer = entry["correct_answer"]
+        incorrect_answers = entry["incorrect_answers"]
+        shuffled_answers = [correct_answer] + incorrect_answers
+        random.shuffle(shuffled_answers)
+
+        correct_answer_id = shuffled_answers.index(correct_answer)
+
+        entry["input"], entry["output"] = format_gpqa_question(question, correct_answer_id, shuffled_answers, value_assignment, action_types)
+
+    demonstrations = [dataset["Instances"][i]["input"] + dataset["Instances"][i]["output"] for i in indices[:n_shot]]
+    selected_dataset_ids = indices[n_shot:]
+
+    demonstrations = "\n\n".join(demonstrations)
+
+    input_prompt_string_list = [demonstrations + "\n\n" + entry["input"] for entry in dataset["Instances"]]
+
+    random.setstate(state)
+
+    return dataset,input_prompt_string_list, selected_dataset_ids
 
 def extract_regex(prompt_format):
     prompt_format_original = prompt_format.replace('<|text|>', '<text>')  # pipe cannot be used for regex

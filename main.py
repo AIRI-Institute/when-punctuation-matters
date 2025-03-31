@@ -5,7 +5,8 @@ import json
 import os
 import random
 
-from data_loading import load_supernatural_instructions_task, load_instruction_induction_task
+import utils
+from data_loading import load_supernatural_instructions_task, load_instruction_induction_task, load_gpqa_dataset, build_gpqa_prompts
 from format_evaluation import GeneticAlgorithmAmongPrompts, value_assignment_str_to_indices, \
     ThompsonSamplingAlgorithmAmongPrompts, TemplateEnsemblesAlgorithmAmongPrompts
 from grammar_definition import pointers_to_all_objects, create_pointer_action_type_pairs, MAPPING_ALL_CATEGORIES, \
@@ -428,6 +429,7 @@ def main():
             print(f"Loading formats from {args.nodes_to_evaluate_filepath}")
             tmp = json.load(open(args.nodes_to_evaluate_filepath, 'r'))
             valid_value_assignments = tmp['valid_value_assignments'] if "valid_value_assignments" in tmp else tmp["test_formats"]
+            action_types = tmp.get("action_types", None)
             assert len(valid_value_assignments) == args.num_formats_to_analyze, f"{len(valid_value_assignments)=}, {args.num_formats_to_analyze=}"
             dataset_ordered_ids = tmp['dataset_ordered_ids']
         elif os.path.exists(filepath):
@@ -525,6 +527,28 @@ def main():
             max_allowed_number_of_model_calls=args.budget_format_spread
         )
 
+    elif args.evaluation_type == 'full' and args.dataset_name == "gpqa":
+
+        dataset = load_gpqa_dataset(args)
+
+        accuracies = []    
+        for value_assignment in valid_value_assignments:
+            dataset, input_prompt_string_list, selected_dataset_ids = build_gpqa_prompts(copy.deepcopy(dataset), value_assignment, action_types, args.n_shot)
+            solve_fn = utils.solve_with_sensitivity_aware if args.sensitivity_aware else utils.solve_with_rank_based_scoring_refactor
+            acc = solve_fn(args, dataset, selected_dataset_ids, model, tokenizer, input_prompt_string_list)
+            accuracies.append(acc)
+        
+        to_dump = {
+            'accuracies': accuracies,
+            'valid_value_assignments': valid_value_assignments,
+            'action_types': action_types,
+            'selected_dataset_ids': selected_dataset_ids
+        }
+
+        output_path = os.path.join(args.output_dir, f'{_get_output_filename(args, disable_text_action_type)}.json')
+        with open(output_path, 'w') as f:
+            json.dump(to_dump, f)
+
     elif args.evaluation_type == 'full':
         # exhaustive node evaluation
         search_tree = GeneticAlgorithmAmongPrompts(
@@ -540,7 +564,8 @@ def main():
         print('valid_value_assignments', valid_value_assignments)
         search_tree.main(
             value_assignments=valid_value_assignments,
-            num_samples_to_test=args.num_samples
+            num_samples_to_test=args.num_samples,
+            action_types=action_types
         )
 
         acc = search_tree.list_node_accuracies()
