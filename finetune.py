@@ -91,6 +91,19 @@ def augment_conversation(conversation, format_split_mode: str, test_format_hashe
 
     return {"text": text}
 
+def apply_default_format(conversation):
+    """Apply the default format to a conversation.
+    """
+    filtered_conversation = [msg for msg in conversation if msg["from"] in ("human", "gpt")]
+    filtered_conversation = filtered_conversation[:2]
+    assert filtered_conversation[0]["from"] == "human"
+    assert filtered_conversation[1]["from"] == "gpt"
+
+    text = f"{INSTRUCTION_PART_TAG}"\
+            f"Question: {filtered_conversation[0]['value']}\n"\
+            f"Answer: {RESPONSE_PART_TAG}{filtered_conversation[1]['value']}"
+
+    return {"text": text}
 
 def _compose_test_hashes_set(format_split_mode: str, path_to_test_formats: str) -> Set[int] | None:
     """If split mode is "random", computes hashes for test prompt formats.
@@ -137,8 +150,7 @@ def _build_natural_instruction_dataset(path_to_test_formats: str, start_idx: int
         instances.extend([task["Instances"][i] for i in train_ids])
     
     dataset = {"conversations": []}
-    # :1000 for debugging
-    for instance in tqdm(instances[:1000], "instances to conversations"):
+    for instance in tqdm(instances, "instances to conversations"):
         conversation = [
             {
                 "from": "human",
@@ -154,7 +166,7 @@ def _build_natural_instruction_dataset(path_to_test_formats: str, start_idx: int
     return dataset
 
 
-def get_dataset(dataset_name: str, n_samples: int, n_augmentations: int, format_split_mode: str, path_to_test_formats: str, start_idx: int) -> Dataset:
+def get_dataset(dataset_name: str, n_samples: int, n_augmentations: int, format_split_mode: str, path_to_test_formats: str, start_idx: int, loss_type: str) -> Dataset:
     """Load a dataset.
     Args:
         dataset_name: path to .csv file or a huggingface dataset name.
@@ -186,7 +198,9 @@ def get_dataset(dataset_name: str, n_samples: int, n_augmentations: int, format_
     all_formatted_texts = []
     for conversation in dataset["conversations"]:
         for _ in range(n_augmentations):
-            # all_formatted_texts.append(<conversation>)
+            # When training with consistency loss, we need the first example of each pair to be the default format.
+            if loss_type == "consistency":
+                all_formatted_texts.append(apply_default_format(conversation))
             all_formatted_texts.append(augment_conversation(conversation, format_split_mode, test_format_hashes))
 
     final_dataset = Dataset.from_list(all_formatted_texts)
@@ -221,20 +235,20 @@ def custom_tokenizer(examples, instructions_pattern, response_pattern, tokenizer
     clean_encodings = tokenizer(
         text = texts_c,
         text_target = labels_c,
-        padding='longest',
+        padding='max_length',
         truncation=True,
         return_tensors="pt",
-        # max_length=max_length, 
+        max_length=max_length,
         add_special_tokens = False
     )
 
     perturb_encodings = tokenizer(
         text=texts_p,
         text_target=labels_p,
-        padding='longest',
+        padding='max_length',
         truncation=True,
         return_tensors="pt",
-        # max_length=max_length, 
+        max_length=max_length,
         add_special_tokens = False
     )
 
@@ -308,11 +322,6 @@ class CustomDataCollator(DataCollatorMixin):
         label_mask_len_p = [torch.tensor(f["label_mask_len_p"]) for f in features]
         labels_p = [torch.tensor(f["labels_p"]) for f in features]
         attention_mask_p = [torch.tensor(f["attention_mask_p"]) for f in features]
-
-        print("input_ids_c", [len(x) for x in input_ids_c])
-        print("label_mask_len_c", [x for x in label_mask_len_c])
-        print("labels_c", [len(x) for x in labels_c])
-        print("attention_mask_c", [len(x) for x in attention_mask_c])
 
         batch = {
             "input_ids_c": torch.stack(input_ids_c),
@@ -403,29 +412,24 @@ class CustomSFTTrainer(SFTTrainer):
             label_mask_len_p
         )
 
-        autoscale = (lc.detach() + lp.detach()) / l_js.detach()
-        assert autoscale.requires_grad == False
+        autoscale = (lc.detach() + lp.detach()) / (l_js.detach() + 1e-4)
 
         total_loss = lc + lp + self.beta * autoscale * l_js
-        
-        print(f"{self.args.report_to=}, {self.state.global_step=}")
-        print(f"{lc.item()=:.3f}, {lp.item()=:.3f}, {l_js.item()=:.3f}, {total_loss.item()=:.3f}")
+
         # Log individual loss components
-        if self.args.report_to == "wandb" and self.state.global_step % 10 == 0:
+        if "wandb" in self.args.report_to and self.state.global_step % self.args.logging_steps == 0:
             print("Logging to wandb")
-            wandb.log({
-                "loss/cross_entropy_first": lc.item(),
-                "loss/cross_entropy_second": lp.item(),
-                "loss/perturbation_consistency": l_js.item(),
-                "loss/total": total_loss.item()
-            }, 
-            # step=self.state.global_step
-        )
+            wandb.log(
+                {
+                    "loss/cross_entropy_first": lc.item(),
+                    "loss/cross_entropy_second": lp.item(),
+                    "loss/perturbation_consistency": l_js.item(),
+                    "loss/total": total_loss.item()
+                },
+                step=self.state.global_step
+            )
 
         return total_loss
-
-    def _get_train_sampler(self):
-        return torch.utils.data.SequentialSampler(self.train_dataset)
 
 
 def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_arguments: TrainingArguments, dataset_arguments: DatasetArguments,
@@ -453,6 +457,7 @@ def run_finetuning(model_name: str, lora_arguments: LoraArguments, training_argu
         dataset_arguments.format_split_mode,
         dataset_arguments.path_to_test_formats,
         dataset_arguments.start_idx,
+        loss_type
     )
 
     if loss_type != 'consistency':
