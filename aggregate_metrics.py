@@ -196,7 +196,7 @@ def _process_single_path(path: str) -> Dict:
         "worst_n": worst_n,
     }
 
-def collect_spreads(paths: List[str]) -> pd.DataFrame:
+def collect_metrics(paths: List[str]) -> pd.DataFrame:
     
     records = Parallel(n_jobs=32)(
         delayed(_process_single_path)(path) 
@@ -372,29 +372,31 @@ def main():
         not "batch-calibration-probs" in name and 
         not "rank1" in name and
         not "default" in name and 
-        not "ensemble" in name and 
-        not "sensitivity-aware-decoding" in name and
-        not "batch-calibration" in name and
-        # ("lora" in name  or "iidx2-no-chat" in name) and 
+        # not "ensemble" in name and 
+        # not "sensitivity-aware-decoding" in name and
+        # not "batch-calibration" in name and
+        # "lora" in name and
         not "exact-match" in name and 
         not "compositional" in name and
-        # "lora" in name and
         not "cross" in name and
-        not "unbalanced" in name
-        # "consistency" in name
+        not "unbalanced" in name and
+        not "consistency" in name
     ]
-    experiment_names = [name for name in experiment_names if ("2-shot" in name and "lora" not in name) or ("0-shot" in name and "lora" in name)]
+    # We only want to include no-chat-template experiments because this way models get higher accuracy
     experiment_names = [name for name in experiment_names if "no-chat-template" in name]
+    # For ICL-methods, we use 2-shots, and for finetuned models we don't need in-context examples
+    experiment_names = [name for name in experiment_names if ("2-shot" in name and "lora" not in name) or ("0-shot" in name and "lora" in name)]
+    # We only want to include instruct models
     experiment_names = [name for name in experiment_names if ("instruct" in name.lower() or "it" in name)]
-    # experiment_names = [name for name in experiment_names if "Llama" in name or "Qwen2.5" in name or "gemma-2" in name]
-    experiment_names = [name for name in experiment_names if "Llama-3.2-3B" in name]
-    # experiment_names = [name for name in experiment_names if "Llama-3.2" in name or "Qwen2.5-1.5B" in name or "Qwen2.5-3B" in name]
-    # experiment_names = [name for name in experiment_names if "3B" in name or "1.5B" in name or "1B" in name]
+    
+    # Selection of concrete models or families
+    experiment_names = [name for name in experiment_names if "Llama" in name or "Qwen2.5" in name or "gemma-2" in name]
 
     for n in experiment_names:
         print("\t", n)
 
     results = {}
+    # Needed for caching
     current_hashes = {}
     
     for experiment_name in tqdm(experiment_names, desc="models"):
@@ -414,16 +416,19 @@ def main():
             results[experiment_name] = cached_results[experiment_name]
             continue
 
+    # Parsing the experiment name
+        # Experiments have the form like "Llama-3.2-3B---no-chat-template-2-shot-lora-0-shot"
+        # Three dashes separate the model name from the rest of the experiment specification
         model_name, tail = experiment_name.split("---")
 
-        num_nodes = 5 * (args.num_nodes + 1) - 1 if "ensemble" in experiment_name else args.num_nodes
         pattern = f"metadataholistic*{model_name}*.json"
         evaluated_tasks_result_paths = list(subdir.glob(pattern))
         if len(evaluated_tasks_result_paths) != N_SELECTED_TASKS:
             print(f"{model_name=}")
             print(f"ATTENTION: {experiment_name} is only evaluated on {len(evaluated_tasks_result_paths)} tasks")
-        df = collect_spreads(evaluated_tasks_result_paths)
+        df = collect_metrics(evaluated_tasks_result_paths)
 
+        # Add setting column
         if "exact-match" in tail:
             df["setting"] = "exact-match"
         elif "unbalanced" in tail:
@@ -435,11 +440,12 @@ def main():
         else:
             df["setting"] = "uniform"
 
-        # Process experiment handle
-        tail = tail.replace("no-chat-template-", "")
-        tail = tail.replace("unbalanced-", "")
-        tail = tail.replace("exact-match-", "")
-            
+        # Remove unnecessary parts of the experiment specification
+        tail = tail.replace("no-chat-template-", "")    # we only consider no-chat-template experiments
+        tail = tail.replace("unbalanced-", "")          # we already added the unbalanced setting
+        tail = tail.replace("exact-match-", "")         # we already added the exact-match setting
+        
+        # Here is a complicated process to convert the rest of experiment specification into a handle which will be displayed on the plots
         if "lora" in model_name:
             tail = tail.replace("0-shot", "")
             tail = tail.replace("response-only-", "")
@@ -472,7 +478,7 @@ def main():
             if tail == "" or tail == "-":
                 tail = "FS"
 
-        # Process model name
+        # Prepare model name for display on the plots
         model_name = model_name.replace("-Instruct", "")\
             .replace("-it", "")\
             .replace("Meta-", "")\
@@ -497,10 +503,13 @@ def main():
     
     total_df = pd.concat(total_df)
 
-    # upper error = 75th percentile - 50th percentile
-    # lower error = 50th percentile - 25th percentile
-    # upper error + lower error = 75th percentile - 25th percentile = IQR
+    # Add a columns measuring robustness via Matthews correlation coefficient:
+    #   upper error = 75th percentile - 50th percentile
+    #   lower error = 50th percentile - 25th percentile
+    #   upper error + lower error = 75th percentile - 25th percentile = IQR
     total_df["iqr_matthews"] = total_df["upper_error_matthews"] + total_df["lower_error_matthews"]
+
+    total_df.to_csv("big_table.csv")
 
 # Create latex tables
     for family in ("Llama", "Qwen", "Gemma"):
@@ -514,9 +523,14 @@ def main():
         latex_table = create_ranking_table(total_df, metric, higher_is_better)
         with open(f"{args.image_dir}/rankings_{metric}.tex", "w") as f:
             f.write(latex_table)
+    
+    # Configure method - color mapping
+    # all_methods = ["FS", "BC", "LoRA", "SAD", "TE"]
+    # all_methods = ["FS", "BC", "LoRA (uniform)", "SAD", "TE", "LoRA (compositional)", "LoRA (cross-domain)", "LoRA (consistency)"]
+
     # all_methods = ["FS", "BC", "SAD", "TE", "LoRA (uniform)", "LoRA (compositional)", "LoRA (cross-domain)", "LoRA (consistency)"]
-    # all_methods = ["FS", "BC", "SAD", "TE", "LoRA", "LoRA (compositional)", "LoRA (cross-domain)", "LoRA (consistency)", "LoRA (consistency)-beta30.0"]
-    all_methods = ["FS", "BC", "SAD", "TE", "LoRA", "LoRA (consistency)", "LoRA (consistency)-beta30.0", "LoRA (consistency)-beta100.0"]
+    all_methods = ["FS", "BC", "SAD", "TE", "LoRA", "LoRA (compositional)", "LoRA (cross-domain)", "LoRA (consistency)"]
+    # all_methods = ["FS", "BC", "SAD", "TE", "LoRA", "LoRA (consistency)", "LoRA (consistency)-beta30.0", "LoRA (consistency)-beta100.0"]
     # all_methods = ["FS", "LoRA (2 augs)", "LoRA (4 augs)", "LoRA (8 augs)", "LoRA (16 augs)", "LoRA (32 augs)"]
 
     unique_methods = total_df["method"].unique()
@@ -530,12 +544,12 @@ def main():
     total_df = total_df.sort_values(["method", "size"])
     total_df["method"] = total_df["method"].cat.remove_unused_categories()
 
-    # total_df = total_df[total_df["setting"] == "exact-match"]
-
+    # Configure plot parameters
     default_figsize = (22, 9)
     default_legend_loc = (1.0, 0.5)
     default_ncol = 1
     default_corner = "center left"
+    dpi = ...
 
     # default_legend_loc = (0.5, -0.3)
     # default_ncol = 5
@@ -846,97 +860,6 @@ def main():
         sns.move_legend(ax, default_corner, bbox_to_anchor=default_legend_loc, ncol=default_ncol, title="Method")
     plt.savefig(f"{args.image_dir}/clustered_barplot_matthews_setting.png", dpi=550, bbox_inches="tight")
     plt.close()
-
-
-    # plt.figure(figsize=(12, 8))
-    # sns.boxplot(data=total_df, x="mean_drop", y="experiment", hue="model", whis=(5, 95), palette=model2color, legend=False)
-    # plt.xlabel(f"Whiskers denote 5th and 95th percentiles\n{N_SELECTED_TASKS} tasks from Natural Instructions")
-    # plt.ylabel("")
-    # plt.title("Mean performance change across prompt formats compared to default format\niid split")
-    # plt.savefig(f"{args.image_dir}/mean_drop_boxplot.png", dpi=550, bbox_inches="tight")
-    # plt.close()
-
-    # unique_models = total_df["model"].unique()
-    # model2color = dict(zip(unique_models, sns.color_palette("colorblind")))
-
-    # for model in unique_models:
-    #     subset = total_df[total_df["model"] == model]
-
-    #     plt.figure(figsize=(12, 8))
-    #     # sns.barplot(data=subset, x="spread", y="experiment", errorbar=("pi", 90), color=model2color[model], legend=False)
-    #     sns.boxplot(data=subset, x="spread", y="experiment", color=model2color[model], legend=False)
-    #     plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
-    #     plt.ylabel("")
-    #     plt.title(f"Spread across prompt formats\niid split")
-    #     # plt.savefig(f"{args.image_dir}/barplot_{model}.png", dpi=550, bbox_inches="tight")
-    #     plt.savefig(f"{args.image_dir}/boxplot_{model}.png", dpi=550, bbox_inches="tight")
-    #     plt.close()
-
-    #     plt.figure(figsize=(12, 8))
-    #     sns.boxplot(data=subset, x="std", y="experiment", color=model2color[model], legend=False)
-    #     plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
-    #     plt.ylabel("")
-    #     plt.title(f"Standard deviation of accuracy across prompt formats\niid split")
-    #     plt.savefig(f"{args.image_dir}/std_boxplot_{model}.png", dpi=550, bbox_inches="tight")
-    #     plt.close()
-
-    #     plt.figure(figsize=(12, 8))
-    #     sns.boxplot(data=subset, x="median_accuracy", y="experiment", color=model2color[model], legend=False)
-    #     plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
-    #     plt.ylabel("")
-    #     plt.title(f"Median accuracy across prompt formats\niid split")
-    #     plt.savefig(f"{args.image_dir}/median_accuracy_boxplot_{model}.png", dpi=550, bbox_inches="tight")
-    #     plt.close()
-
-    #     # plt.figure(figsize=(12, 8))
-    #     # sns.boxplot(data=subset, x="mean_drop", y="experiment", color=model2color[model], whis=(5, 95), legend=False)
-    #     # plt.xlabel(f"Whiskers denote 5th and 95th percentiles\n{N_SELECTED_TASKS} tasks from Natural Instructions")
-    #     # plt.ylabel("")
-    #     # plt.title(f"Mean performance change across prompt formats compared to default format\niid split")
-    #     # plt.savefig(f"{args.image_dir}/mean_drop_boxplot_{model}.png", dpi=550, bbox_inches="tight")
-    #     # plt.close()
-
-    # plt.figure(figsize=(12, 8))
-    # sns.barplot(data=total_df, x="spread", y="experiment", hue="model", errorbar=None, palette=model2color)
-    # plt.xlabel(f"Spread across prompt formats\n{N_SELECTED_TASKS} tasks from Natural Instructions")
-    # plt.ylabel("")
-    # plt.title("Spread across prompt formats\niid split")
-    # plt.savefig(f"{args.image_dir}/spread.png", dpi=550, bbox_inches="tight")
-    # plt.close()
-
-    # plt.figure(figsize=(12, 8))
-    # sns.barplot(data=total_df, x="std", y="experiment", hue="model", errorbar=None, palette=model2color)
-    # plt.xlabel(f"Standard deviation of accuracy across prompt formats\n{N_SELECTED_TASKS} tasks from Natural Instructions")
-    # plt.ylabel("")
-    # plt.title("Standard deviation of accuracy across prompt formats\niid split")
-    # plt.savefig(f"{args.image_dir}/std.png", dpi=550, bbox_inches="tight")
-    # plt.close()
-
-    # plt.figure(figsize=(12, 8))
-    # sns.barplot(data=total_df, x="spread", y="experiment", hue="model", errorbar=("pi", 90), palette=model2color, legend=False)
-    # plt.xlabel(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
-    # plt.ylabel("")
-    # plt.title("Spread across prompt formats\niid split")
-    # plt.savefig(f"{args.image_dir}/all_barplot.png", dpi=550, bbox_inches="tight")
-    # plt.close()
-
-# Barplot with errorbars
-    # plt.figure(figsize=(12, 8))
-    # sns.barplot(data=total_df, x="median_accuracy", y="experiment", hue="model", errorbar=None, palette=model2color)
-    # plt.errorbar(
-    #     x=total_df.groupby("experiment")["median_accuracy"].mean(),
-    #     y=total_df.groupby("experiment")["experiment"].first(),
-    #     xerr=2 * total_df.groupby("experiment")["std"].mean(),
-    #     fmt="none",
-    #     linewidth=2,
-    #     color="black",
-    #     capsize=4,
-    # )
-    # plt.title(f"{N_SELECTED_TASKS} tasks from Natural Instructions")
-    # plt.ylabel("")
-    # plt.xlabel(f"Barplot -- accuracy: median over formats, mean over tasks.\nErrorbars -- variation of accuracy: 2 * (std over formats, mean over tasks).")
-    # plt.savefig(f"{args.image_dir}/median_accuracy_all_boxplot.png", dpi=550, bbox_inches="tight")
-    # plt.close()
 
 
 if __name__ == "__main__":
