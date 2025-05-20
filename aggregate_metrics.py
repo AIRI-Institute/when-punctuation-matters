@@ -13,7 +13,7 @@ from typing import Dict, List
 from math import sqrt, ceil
 from statistics import median, stdev, quantiles
 from argparse import ArgumentParser
-from sklearn.metrics import balanced_accuracy_score, matthews_corrcoef
+from sklearn.metrics import balanced_accuracy_score, matthews_corrcoef, f1_score
 import hashlib
 
 
@@ -110,6 +110,8 @@ def _compute_unbalanced_metrics(node: List) -> Dict[str, float]:
     
     metrics = {}
     metrics["balanced_accuracy"] = balanced_accuracy_score(y_true, y_pred)
+    metrics["macro_f1_score"] = f1_score(y_true, y_pred, average="macro")
+    metrics["weighted_f1_score"] = f1_score(y_true, y_pred, average="weighted")
     metrics["matthews_corrcoef"] = matthews_corrcoef(y_true, y_pred)
     return metrics
 
@@ -117,10 +119,14 @@ def _compute_unbalanced_metrics(node: List) -> Dict[str, float]:
 def _process_single_path(path: str) -> Dict:
     result_json = read_json(path)
 
+    additional_metric_names = ["matthews_corrcoefs", "balanced_accuracies", "macro_f1_scores", "weighted_f1_scores"]
+
     # Check if metrics are already computed
-    if "matthews_corrcoefs" in result_json and "balanced_accuracies" in result_json:
+    if all(metric_name in result_json for metric_name in additional_metric_names):
         matthews_corrs = result_json["matthews_corrcoefs"]
         balanced_accuracies = result_json["balanced_accuracies"]
+        macro_f1_scores = result_json["macro_f1_scores"]
+        weighted_f1_scores = result_json["weighted_f1_scores"]
     else:
         # Compute metrics
         metadata = result_json["metadata"]
@@ -131,10 +137,14 @@ def _process_single_path(path: str) -> Dict:
         
         balanced_accuracies = [node["balanced_accuracy"] for node in nodes_metrics]
         matthews_corrs = [node["matthews_corrcoef"] for node in nodes_metrics]
+        macro_f1_scores = [node["macro_f1_score"] for node in nodes_metrics]
+        weighted_f1_scores = [node["weighted_f1_score"] for node in nodes_metrics]
         
         # Save metrics in result_json
         result_json["matthews_corrcoefs"] = matthews_corrs
         result_json["balanced_accuracies"] = balanced_accuracies
+        result_json["macro_f1_scores"] = macro_f1_scores
+        result_json["weighted_f1_scores"] = weighted_f1_scores
         
         # Write back to file
         with open(path, "w") as f:
@@ -175,25 +185,32 @@ def _process_single_path(path: str) -> Dict:
 
     return {
         "task": _extract_name_from_path(str(path)),
-        "spread": best_acc - worst_acc,
-        "std": accuracy_std,
+        "default_accuracy": default_accuracy,
         "best_accuracy": best_acc,
         "worst_accuracy": worst_acc,
-        "median_accuracy": median_accuracy,
-        "default_accuracy": default_accuracy,
         "mean_drop": sum(changes) / len(changes) if len(changes) > 0 else 0,
-        "median_balanced_accuracy": median(balanced_accuracies),
-        "spread_balanced": max(balanced_accuracies) - min(balanced_accuracies),
-        "std_balanced": stdev(balanced_accuracies),
-        "median_matthews_corrcoef": matt50,
-        "upper_error_matthews": matt75 - matt50,
-        "lower_error_matthews": matt50 - matt25,
-        "spread_matthews": max(matthews_corrs) - min(matthews_corrs),
-        "std_matthews": stdev(matthews_corrs),
         "best_format": best_format,
         "worst_format": worst_format,
         "best_n": best_n,
         "worst_n": worst_n,
+        "median_accuracy": median_accuracy,
+        "median_balanced_accuracy": median(balanced_accuracies),
+        "median_matthews_corrcoef": matt50,
+        "median_macro_f1_score": median(macro_f1_scores),
+        "median_weighted_f1_score": median(weighted_f1_scores),
+        "std_accuracy": accuracy_std,
+        "std_balanced_accuracy": stdev(balanced_accuracies),
+        "std_matthews_corrcoef": stdev(matthews_corrs),
+        "std_macro_f1_score": stdev(macro_f1_scores),
+        "std_weighted_f1_score": stdev(weighted_f1_scores),
+        "spread_accuracy": best_acc - worst_acc,
+        "spread_balanced_accuracy": max(balanced_accuracies) - min(balanced_accuracies),
+        "spread_matthews_corrcoef": max(matthews_corrs) - min(matthews_corrs),
+        "spread_macro_f1_score": max(macro_f1_scores) - min(macro_f1_scores),
+        "spread_weighted_f1_score": max(weighted_f1_scores) - min(weighted_f1_scores),
+        "upper_error_matthews_corrcoef": matt75 - matt50,
+        "lower_error_matthews_corrcoef": matt50 - matt25,
+        "iqr_matthews_corrcoef": matt75 - matt25,
     }
 
 def collect_metrics(paths: List[str]) -> pd.DataFrame:
@@ -201,8 +218,9 @@ def collect_metrics(paths: List[str]) -> pd.DataFrame:
     records = Parallel(n_jobs=32)(
         delayed(_process_single_path)(path) 
         for path in paths
-        # for path in tqdm(paths, desc="paths")
     )
+
+    # records = [_process_single_path(path) for path in paths]
     
     return pd.DataFrame.from_records(records)
 
@@ -286,38 +304,73 @@ def create_ranking_table(df, metric, higher_is_better=True) -> str:
     
     return latex_table
 
+def plot_paired_spread_and_metric(total_df, method2color, x_axis, image_dir, figsize,dpi, metric_name: str):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize, sharex=True)
+    
+    # Top plot (spread)
+    sns.barplot(
+        data=total_df,
+        x=x_axis,
+        y=f"spread_{metric_name}",
+        hue="method" if x_axis == "model" else None,
+        errorbar=None,
+        palette=method2color,
+        ax=ax1
+    )
+    ax1.tick_params(axis="x", which="both", length=0.)
+    ax1.set_xlabel("")
+    ax1.set_ylabel(f"Spread ({metric_name})", labelpad=25)
+    ax1.set_title(f"Methods' spread ({metric_name}) over prompts on different models\n(lower is better)", fontsize=36, pad=30)
+    ax1.get_legend().remove()
+    
+    # Bottom plot (F1 with errorbars)
+    sns.barplot(
+        data=total_df,
+        x=x_axis,
+        y=f"median_{metric_name}",
+        hue="method" if x_axis == "model" else None,
+        errorbar=None,
+        palette=method2color,
+        ax=ax2
+    )
+    ax2.set_xticklabels(ax2.get_xticklabels(), rotation=15, ha="right")
+    ax2.set_xlabel("")
+    ax2.set_ylabel(f"{metric_name.title()}", labelpad=25)
+    ax2.set_title(f"Methods' {metric_name} over prompts on different models", fontsize=36, pad=30)
+    
+    # Add error bars to bottom plot
+    mean_stds = total_df.groupby(["model", "method"], observed=True)[f"std_{metric_name}"].mean()
+    for p, mean_std in zip(ax2.patches, mean_stds):
+        x = p.get_x()
+        w = p.get_width()
+        h = p.get_height()
+        ax2.errorbar(x + w / 2, h, yerr=2 * mean_std, fmt="none", linewidth=2, color="black", capsize=4)
+    
+    # Move legend to the right center
+    legend = ax2.get_legend()
+    fig.legend(
+        legend.legend_handles, 
+        [t.get_text() for t in legend.get_texts()],
+        title="Method",
+        bbox_to_anchor=(1.0, 0.5),
+        loc="center left"
+    )
+    legend.remove()
+    
+    plt.tight_layout()
+    plt.savefig(f"{image_dir}/paired_clustered_spread_and_{metric_name}_with_errorbars.png", 
+                dpi=dpi, 
+                bbox_inches="tight")
+    plt.close()
 
-def create_accuracy_std_table(df):
+
+def create_accuracy_std_table_single_method(df, metric_name):
     # Calculate mean of median_accuracy and std for each combination
-    stats = df.groupby(["setting", "model", "method"], observed=True)[["median_accuracy", "std"]].mean()
+    stats = df.groupby(["setting", "model"], observed=True)[[f"median_{metric_name}", f"std_{metric_name}"]].mean()
     
     # Format the accuracy ± std string
     stats["formatted"] = stats.apply(
-        lambda x: f"${x['median_accuracy']:.4f} \pm {2*x['std']:.4f}$", 
-        axis=1
-    )
-    
-    # Pivot to get desired table format
-    table = stats["formatted"].unstack(level=[1, 2])
-    
-    # Convert to LaTeX table with custom formatting
-    latex_table = table.to_latex(
-        multicolumn=True,
-        multicolumn_format='c',
-        bold_rows=False,
-        caption="Accuracy (mean ± 2*std) for each setting, model and method combination",
-        label="tab:accuracy_std"
-    )
-    
-    return latex_table
-
-def create_accuracy_std_table_single_method(df):
-    # Calculate mean of median_accuracy and std for each combination
-    stats = df.groupby(["setting", "model"], observed=True)[["median_accuracy", "std"]].mean()
-    
-    # Format the accuracy ± std string
-    stats["formatted"] = stats.apply(
-        lambda x: f"${x['median_accuracy']:.4f} \pm {2*x['std']:.4f}$", 
+        lambda x: f"${x[f'median_{metric_name}']:.4f} \pm {2*x[f'std_{metric_name}']:.4f}$", 
         axis=1
     )
     
@@ -327,13 +380,52 @@ def create_accuracy_std_table_single_method(df):
     # Convert to LaTeX table with custom formatting
     latex_table = table.to_latex(
         bold_rows=False,
-        caption="Accuracy (mean ± 2*std) for each setting and model.",
+        caption=f"{metric_name.title()} (mean ± 2*std) for each setting and model.",
+        label="tab:accuracy_std"
+    )
+    
+    return latex_table
+
+def create_accuracy_std_table(df, metric_name):
+    # Calculate mean of median_accuracy and std for each combination
+    stats = df.groupby(["setting", "model", "method"], observed=True)[[f"median_{metric_name}", f"std_{metric_name}"]].mean()
+    
+    # Format the accuracy ± std string
+    stats["formatted"] = stats.apply(
+        lambda x: f"${x[f'median_{metric_name}']:.2f} \pm {2*x[f'std_{metric_name}']:.2f}$", 
+        axis=1
+    )
+    
+    # Pivot to get desired table format
+    table = stats["formatted"].unstack(level=[0, 2])
+    
+    # Convert to LaTeX table with custom formatting
+    latex_table = table.to_latex(
+        bold_rows=False,
+        caption=f"{metric_name.title()} (mean ± 2*std) for each setting and model.",
         label="tab:accuracy_std"
     )
     
     return latex_table
 
 
+def write_accuracy_std_tables(families, total_df, image_dir, metric_name, is_single_method=True):
+    for family in families:
+        if is_single_method:
+            latex_table = create_accuracy_std_table_single_method(total_df[total_df["model"].str.contains(family)], metric_name)
+        else:
+            latex_table = create_accuracy_std_table(total_df[total_df["model"].str.contains(family)], metric_name)
+        with open(f"{image_dir}/accuracy_std_table_{family}.tex", "w") as f:
+            f.write(latex_table)
+
+def write_ranking_tables(total_df, image_dir):
+    metrics = ("median_matthews_corrcoef", "iqr_matthews_corrcoef")
+    directions = (True, False)
+    for metric, higher_is_better in zip(metrics, directions):
+        latex_table = create_ranking_table(total_df, metric, higher_is_better)
+        with open(f"{image_dir}/rankings_{metric}.tex", "w") as f:
+            f.write(latex_table)
+    
 
 def parse_args():
     parser = ArgumentParser()
@@ -372,10 +464,10 @@ def main():
         not "batch-calibration-probs" in name and 
         not "rank1" in name and
         not "default" in name and 
-        # not "ensemble" in name and 
-        # not "sensitivity-aware-decoding" in name and
-        # not "batch-calibration" in name and
-        # "lora" in name and
+        not "ensemble" in name and 
+        not "sensitivity-aware-decoding" in name and
+        not "batch-calibration" in name and
+        not "lora" in name and
         not "exact-match" in name and 
         not "compositional" in name and
         not "cross" in name and
@@ -390,6 +482,7 @@ def main():
     experiment_names = [name for name in experiment_names if ("instruct" in name.lower() or "it" in name)]
     
     # Selection of concrete models or families
+    # experiment_names = [name for name in experiment_names if "Qwen2.5-3B" in name]
     experiment_names = [name for name in experiment_names if "Llama" in name or "Qwen2.5" in name or "gemma-2" in name]
 
     for n in experiment_names:
@@ -456,6 +549,8 @@ def main():
             tail = tail.replace("iid-", " (cross-domain)")
             tail = tail.replace("separator-space-", "")
             tail = tail.replace("compositional-", " (compositional)")
+            tail = tail.replace("May--beta-50", " (May, beta=50)")
+            tail = tail.replace("May-", " (May)")
 
             tail = tail.replace("32augs-", " (32 augs)")
             tail = tail.replace("2augs-", " (2 augs)")
@@ -492,7 +587,7 @@ def main():
         df["size"] = _get_model_size(model_name)
 
         df.to_csv(subdir / "spreads.csv")
-        plot_and_save_hist(df["spread"].values, experiment_name, subdir / "spreads.png")
+        plot_and_save_hist(df["spread_accuracy"].values, experiment_name, subdir / "spreads.png")
         total_df.append(df)
         
         # Cache the results
@@ -503,35 +598,16 @@ def main():
     
     total_df = pd.concat(total_df)
 
-    # Add a columns measuring robustness via Matthews correlation coefficient:
-    #   upper error = 75th percentile - 50th percentile
-    #   lower error = 50th percentile - 25th percentile
-    #   upper error + lower error = 75th percentile - 25th percentile = IQR
-    total_df["iqr_matthews"] = total_df["upper_error_matthews"] + total_df["lower_error_matthews"]
-
     total_df.to_csv("big_table.csv")
-
-# Create latex tables
-    for family in ("Llama", "Qwen", "Gemma"):
-        latex_table = create_accuracy_std_table_single_method(total_df[total_df["model"].str.contains(family)])
-        with open(f"{args.image_dir}/accuracy_std_table_{family}.tex", "w") as f:
-            f.write(latex_table)
-
-    metrics = ("median_matthews_corrcoef", "iqr_matthews")
-    directions = (True, False)
-    for metric, higher_is_better in zip(metrics, directions):
-        latex_table = create_ranking_table(total_df, metric, higher_is_better)
-        with open(f"{args.image_dir}/rankings_{metric}.tex", "w") as f:
-            f.write(latex_table)
     
     # Configure method - color mapping
     # all_methods = ["FS", "BC", "LoRA", "SAD", "TE"]
     # all_methods = ["FS", "BC", "LoRA (uniform)", "SAD", "TE", "LoRA (compositional)", "LoRA (cross-domain)", "LoRA (consistency)"]
 
-    # all_methods = ["FS", "BC", "SAD", "TE", "LoRA (uniform)", "LoRA (compositional)", "LoRA (cross-domain)", "LoRA (consistency)"]
-    all_methods = ["FS", "BC", "SAD", "TE", "LoRA", "LoRA (compositional)", "LoRA (cross-domain)", "LoRA (consistency)"]
-    # all_methods = ["FS", "BC", "SAD", "TE", "LoRA", "LoRA (consistency)", "LoRA (consistency)-beta30.0", "LoRA (consistency)-beta100.0"]
+    # all_methods = ["FS", "BC", "SAD", "TE", "LoRA", "LoRA (consistency)", "LoRA (consistency) (May)", "LoRA (consistency) (May, beta=50)"]
+    # all_methods = ["FS", "BC", "SAD", "TE", "LoRA", "LoRA (compositional)", "LoRA (cross-domain)", "LoRA (consistency)"]
     # all_methods = ["FS", "LoRA (2 augs)", "LoRA (4 augs)", "LoRA (8 augs)", "LoRA (16 augs)", "LoRA (32 augs)"]
+    all_methods = ["FS", "BC", "SAD", "TE", "LoRA", "LoRA (compositional)", "LoRA (cross-domain)", "LoRA (consistency)", "(new) TE"]
 
     unique_methods = total_df["method"].unique()
     print(f"{unique_methods=}")
@@ -544,19 +620,36 @@ def main():
     total_df = total_df.sort_values(["method", "size"])
     total_df["method"] = total_df["method"].cat.remove_unused_categories()
 
+    confirmation = input("Press `y` to continue...")
+    if confirmation != "y":
+        exit()
+
+# Create latex tables
+    # write_accuracy_std_tables(("Llama", "Qwen", "Gemma"), total_df, args.image_dir, "accuracy", is_single_method=False)
+    latex_table = create_accuracy_std_table(total_df, "accuracy")
+    with open(f"{args.image_dir}/accuracy_std_table.tex", "w") as f:
+        f.write(latex_table)
+    # write_ranking_tables(total_df, args.image_dir)
+    return
     # Configure plot parameters
     default_figsize = (22, 9)
     default_legend_loc = (1.0, 0.5)
     default_ncol = 1
     default_corner = "center left"
-    dpi = ...
+    x_axis = "model"
+    dpi = 350
 
     # default_legend_loc = (0.5, -0.3)
     # default_ncol = 5
     # default_corner = "center"
 
+    for metric_name in ("accuracy", "macro_f1_score", "weighted_f1_score"):
+        figsize = (24, 15)
+        plot_paired_spread_and_metric(total_df, method2color, x_axis, args.image_dir, figsize, dpi, metric_name)
+
+    return
+
 # Spread
-    x_axis = "model"
     plt.figure(figsize=default_figsize)
     ax = sns.barplot(data=total_df, x=x_axis, y="spread", hue="method" if x_axis == "model" else None, errorbar=None, palette=method2color)
     plt.xticks(rotation=15, ha="right")
@@ -631,6 +724,7 @@ def main():
                 dpi=550, 
                 bbox_inches="tight")
     plt.close()
+
 
 # Paired spread and Matthews correlation coefficient plots
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(24, 15), sharex=True)

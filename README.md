@@ -18,7 +18,7 @@ conda create -n aa --file environment.yml
 
 conda activate aa
 
-pip install trl==0.12.1 unsloth==2024.11.7 xformers==0.0.28.post3 bitsandbytes==0.44.1 wandb==0.18.7
+pip install trl==0.12.1 unsloth==2024.11.7 xformers==0.0.28.post3 bitsandbytes==0.44.1 wandb==0.18.7 dotenv
 ```
 
 Prepare a directory with format train/test splits (this should run several minutes):
