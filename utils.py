@@ -1,5 +1,6 @@
 import copy
 import math
+import json
 import os
 import psutil
 from tqdm import tqdm
@@ -747,11 +748,12 @@ def evaluate_prompt_format_ensembles(
         args, dataset, input_fields_list, regex_key_idx_list, selected_dataset_ids,
         demos_fields_list, demos_regex_key_idx_list, demonstrations_outputs, demonstration_definition,
         structured_prompt_format_list, model, tokenizer, model_will_repeat_input,
-        original_to_current_multiple_choice_classes_list, interval_ids_to_test=(None, None)):
+        original_to_current_multiple_choice_classes_list, interval_ids_to_test=(None, None), ensemble_id=None):
     """
     Function that evaluates a prompt format (i.e. node) on a given set of samples (interval_ids_to_test).
     If interval_ids_to_test is not provided, it defaults to evaluating the whole dataset.
     """
+    assert ensemble_id is not None, "ensemble_id must be provided"
     # 1. set up input prompts including demonstrations
     input_prompt_string_list = []
     for i in range(len(structured_prompt_format_list)):
@@ -769,6 +771,20 @@ def evaluate_prompt_format_ensembles(
 
     # 3. evaluate
     if args.evaluation_metric == 'probability_ranking':
+        # NOTE: This is a hack to save the input prompts and answers to a file
+
+        answer_path = f"formatted_prompts/input_prompt_string_list_{args.task_filename.strip('_')}_answers.json"
+        if not os.path.exists(answer_path):
+            with open(answer_path, "w") as f:
+                answers = [dataset_updated[index]["output"][0] for index in selected_dataset_ids]
+                json.dump(answers, f)
+
+        path = f"formatted_prompts/input_prompt_string_list_{args.task_filename.strip('_')}_ensemble_id_{ensemble_id}.json"
+
+        with open(path, "w") as f:
+            print(path.split("/")[-1])
+            json.dump(input_prompt_string_list, f)
+        
         return solve_with_rank_based_scoring_ensembles(
             args, dataset_updated, selected_dataset_ids, model, tokenizer, input_prompt_string_list)
     
@@ -797,45 +813,48 @@ def solve_with_rank_based_scoring_ensembles(args, dataset, selected_dataset_ids,
     for batch_idx in tqdm(range(math.ceil(len(selected_dataset_ids) / args.batch_size_llm)), desc="batches"):
         batch_start_idx = batch_idx * args.batch_size_llm
         batch_end_idx = (batch_idx + 1) * args.batch_size_llm
+        actual_batch_size = len(input_prompt_string_list[0][batch_start_idx:batch_end_idx])
 
         cumulative_probs = None
-        for i in range(len(input_prompt_string_list)):
-            prompts = prompts = input_prompt_string_list[i][batch_start_idx:batch_end_idx]
-            actual_batch_size = len(prompts)
+        cumulative_probs = torch.randn(actual_batch_size, len(output_classes))
+        # for i in range(len(input_prompt_string_list)):
+        #     prompts = prompts = input_prompt_string_list[i][batch_start_idx:batch_end_idx]
+        #     actual_batch_size = len(prompts)
 
-            inputs = _tokenize_prompts_with_answers(prompts, output_classes, "_lora" in args.model_name, tokenizer).to(model.device)
-            # inputs.input_ids has shape [batch_size * n_classes, seq_len]
-            # print(f"{inputs['input_ids'].shape=}")
+        #     inputs = _tokenize_prompts_with_answers(prompts, output_classes, "_lora" in args.model_name, tokenizer).to(model.device)
+        #     # inputs.input_ids has shape [batch_size * n_classes, seq_len]
+        #     # print(f"{inputs['input_ids'].shape=}")
 
-            output_tokens = inputs["input_ids"][:, -max_answer_length:]
-            # [batch_size * n_classes, max_answer_length]
+        #     output_tokens = inputs["input_ids"][:, -max_answer_length:]
+        #     # [batch_size * n_classes, max_answer_length]
 
-            logits = model(**inputs).logits.detach()
-            # [batch_size * n_classes, seq_len, vocab_size]
-            # print(f"{batch_size_llm=}, {actual_batch_size=}")
-            # print(f"{max_answer_length=}")
+        #     logits = model(**inputs).logits.detach()
+            
+        #     # [batch_size * n_classes, seq_len, vocab_size]
+        #     # print(f"{batch_size_llm=}, {actual_batch_size=}")
+        #     # print(f"{max_answer_length=}")
 
-            answer_logits = logits[:, -max_answer_length - 1:-1].clone()
-            # print(f"{answer_logits.shape=}")
-            # [batch_size * n_classes, max_answer_length, vocab_size]
+        #     answer_logits = logits[:, -max_answer_length - 1:-1].clone()
+        #     # print(f"{answer_logits.shape=}")
+        #     # [batch_size * n_classes, max_answer_length, vocab_size]
 
-            logits_for_answer_tokens = torch.gather(answer_logits, dim=-1, index=output_tokens.unsqueeze(-1)).squeeze(-1)
-            # print(f"{logits_for_answer_tokens.shape=}")
-            # mask out tokens, which do not correspond to answer tokens
-            # assumes left-side padding
-            for i, length in enumerate(answer_lengths * actual_batch_size):
-                logits_for_answer_tokens[i, :-length] = 0
+        #     logits_for_answer_tokens = torch.gather(answer_logits, dim=-1, index=output_tokens.unsqueeze(-1)).squeeze(-1)
+        #     # print(f"{logits_for_answer_tokens.shape=}")
+        #     # mask out tokens, which do not correspond to answer tokens
+        #     # assumes left-side padding
+        #     for i, length in enumerate(answer_lengths * actual_batch_size):
+        #         logits_for_answer_tokens[i, :-length] = 0
 
-            # [batch_size * n_classes, max_answer_length]
-            cumulative_logits = logits_for_answer_tokens.sum(-1)
-            # [batch_size * n_classes]
+        #     # [batch_size * n_classes, max_answer_length]
+        #     cumulative_logits = logits_for_answer_tokens.sum(-1)
+        #     # [batch_size * n_classes]
 
-            if cumulative_probs is None:
-                cumulative_probs = F.softmax(cumulative_logits.reshape(actual_batch_size, len(output_classes)), dim=-1)
-            else:
-                cumulative_probs += F.softmax(cumulative_logits.reshape(actual_batch_size, len(output_classes)), dim=-1)
+        #     if cumulative_probs is None:
+        #         cumulative_probs = F.softmax(cumulative_logits.reshape(actual_batch_size, len(output_classes)), dim=-1)
+        #     else:
+        #         cumulative_probs += F.softmax(cumulative_logits.reshape(actual_batch_size, len(output_classes)), dim=-1)
 
-        cumulative_probs /= len(input_prompt_string_list)
+        # cumulative_probs /= len(input_prompt_string_list)
         chosen_answer_indices = cumulative_probs.argmax(dim=-1).cpu()
 
         for idx in range(actual_batch_size):
@@ -859,7 +878,7 @@ def solve_with_rank_based_scoring_ensembles(args, dataset, selected_dataset_ids,
                 }
             )
 
-        del logits
+        # del logits
         torch.cuda.empty_cache()
 
     return (sum(accuracy['right']) * 1.0 / max(accuracy['total'], 1),
