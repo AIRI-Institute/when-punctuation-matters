@@ -41,3 +41,16 @@ mkdir training
 bash scripts/autoresearcher.sh 0 unsloth/Llama-3.2-1B-Instruct random ---iidx2-no-chat-template llama1b_iidx2
 ```
 (refer to `scripts/autoresearcher.sh` to understand the order and meaning of arguments)
+
+## Citation
+```
+@misc{seleznyov2025punctuationmatterslargescalecomparison,
+      title={When Punctuation Matters: A Large-Scale Comparison of Prompt Robustness Methods for LLMs}, 
+      author={Mikhail Seleznyov and Mikhail Chaichuk and Gleb Ershov and Alexander Panchenko and Elena Tutubalina and Oleg Somov},
+      year={2025},
+      eprint={2508.11383},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2508.11383}, 
+}
+```
