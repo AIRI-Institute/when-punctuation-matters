@@ -1,5 +1,7 @@
 # When Punctuation Matters: A Large-Scale Comparison of Prompt Robustness Methods for LLMs
 
+[![arXiv](https://img.shields.io/badge/cs.CL-arXiv%3A2508.11383-B31B1B.svg)](https://arxiv.org/abs/2508.11383)
+
 Large Language Models (LLMs) are highly sensitive to subtle, non-semantic variations in prompt phrasing and formatting. In this work, we present the first systematic evaluation of 4 methods for improving prompt robustness within a unified experimental framework. We benchmark these techniques on 8 models from Llama, Qwen and Gemma families across 52 tasks from Natural Instructions dataset. Our evaluation covers robustness methods from both fine-tuned and in-context learning paradigms, and tests their generalization against multiple types of distribution shifts. Finally, we extend our analysis to GPT-4.1 and DeepSeek V3 to assess frontier models' current robustness to format perturbations. Our findings offer actionable insights into the relative effectiveness of these robustness methods, enabling practitioners to make informed decisions when aiming for stable and reliable LLM performance in real-world applications.
 
 ## Getting data
