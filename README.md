@@ -11,6 +11,8 @@ Clone `natural-instructions` so that they are located next to `prompt-instabilit
 git clone git@github.com:allenai/natural-instructions.git
 ```
 
+Use this [link](https://drive.google.com/file/d/1dR9SFzvWfreaZHlL5CrNku9bD2ved5hx/view?usp=sharing) to download a zip file containing unbalanced versions of Natural Instructions tasks. Unzip the file and move directory `unbalanced_tasks` next to directory `tasks` inside `natural-instructions`.
+
 ## Setup
 
 ```
